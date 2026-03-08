@@ -139,6 +139,10 @@ extension Ghostty {
         /// Note: eventually, all surface access will be through this, but presently its in a transition
         /// state so we're mixing this with direct surface access.
         private(set) var surfaceModel: Ghostty.Surface?
+        private static let remotePasteSelfTestQueue = DispatchQueue(
+            label: "Ghostty.SurfaceView.RemotePasteSelfTest"
+        )
+        private static var remotePasteSelfTestStarted = false
 
         /// Returns the underlying C value for the surface. See "note" on surfaceModel.
         var surface: ghostty_surface_t? {
@@ -316,6 +320,7 @@ extension Ghostty {
                 return
             }
             self.surfaceModel = Ghostty.Surface(cSurface: surface)
+            maybeStartRemotePasteSelfTest()
 
             // Setup our tracking area so we get mouse moved events
             updateTrackingAreas()
@@ -1129,6 +1134,10 @@ extension Ghostty {
                 return false
             }
 
+            if isRemoteAwarePasteKeyEquivalent(event) {
+                return handlePasteRequest()
+            }
+
             // If this event as-is would result in a key binding then we send it.
             if let surface {
                 var ghosttyEvent = event.ghosttyKeyEvent(GHOSTTY_ACTION_PRESS)
@@ -1217,6 +1226,14 @@ extension Ghostty {
 
             self.keyDown(with: finalEvent!)
             return true
+        }
+
+        private func isRemoteAwarePasteKeyEquivalent(_ event: NSEvent) -> Bool {
+            guard let appDelegate = NSApplication.shared.delegate as? AppDelegate else {
+                return false
+            }
+
+            return appDelegate.matchesPasteShortcut(event: event)
         }
 
         override func flagsChanged(with event: NSEvent) {
@@ -1401,23 +1418,300 @@ extension Ghostty {
         }
 
         @IBAction func paste(_ sender: Any?) {
-            do {
-                if let remotePath = try RemotePasteBridge.remotePastePath(for: .general) {
-                    insertText(remotePath + " ", replacementRange: NSRange(location: 0, length: 0))
-                    return
-                }
-            } catch {
-                AppDelegate.logger.error("remote paste bridge failed error=\(error.localizedDescription)")
-                showRemotePasteAlert(error)
-                return
-            }
-
-            performNativePaste()
+            _ = handlePasteRequest()
         }
 
 
         @IBAction func pasteAsPlainText(_ sender: Any?) {
             performNativePaste()
+        }
+
+        @discardableResult
+        private func handlePasteRequest() -> Bool {
+            let request: RemotePasteBridge.PasteRequest
+            do {
+                request = try RemotePasteBridge.preparePaste(for: .general)
+            } catch {
+                AppDelegate.logger.error("remote paste bridge failed error=\(error.localizedDescription)")
+                showRemotePasteAlert(error)
+                return true
+            }
+
+            switch request {
+            case .native:
+                performNativePaste()
+            case let .remote(payload):
+                startRemotePaste(payload)
+            }
+
+            return true
+        }
+
+        private func startRemotePaste(_ payload: RemotePasteBridge.RemotePayload) {
+            Task.detached(priority: .userInitiated) { [weak self] in
+                do {
+                    let remotePath = try RemotePasteBridge.uploadRemotePath(for: payload)
+                    await MainActor.run { [weak self] in
+                        self?.insertRemotePasteText(remotePath + " ")
+                    }
+                } catch {
+                    AppDelegate.logger.error("remote paste bridge failed error=\(error.localizedDescription)")
+                    await MainActor.run { [weak self] in
+                        self?.showRemotePasteAlert(error)
+                    }
+                }
+            }
+        }
+
+        private func insertRemotePasteText(_ text: String) {
+            guard let surfaceModel else { return }
+            unmarkText()
+            surfaceModel.sendText(text)
+        }
+
+        private func maybeStartRemotePasteSelfTest() {
+            guard let _ = ProcessInfo.processInfo.environment["GHOSTTY_REMOTE_PASTE_SELFTEST_ROOT"] else {
+                return
+            }
+
+            let shouldStart = Self.remotePasteSelfTestQueue.sync { () -> Bool in
+                if Self.remotePasteSelfTestStarted { return false }
+                Self.remotePasteSelfTestStarted = true
+                return true
+            }
+            guard shouldStart else { return }
+
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.runRemotePasteSelfTest()
+            }
+        }
+
+        @MainActor
+        private func runRemotePasteSelfTest() async {
+            let env = ProcessInfo.processInfo.environment
+            guard let root = env["GHOSTTY_REMOTE_PASTE_SELFTEST_ROOT"] else { return }
+
+            var reportLines = [
+                "ROOT=\(root)",
+            ]
+
+            do {
+                let fileManager = FileManager.default
+                try fileManager.createDirectory(
+                    at: URL(fileURLWithPath: root),
+                    withIntermediateDirectories: true,
+                    attributes: nil
+                )
+
+                let textSentinel = "ghostty-text-ctrl-v"
+                let fileSentinel = "ghostty-file-ctrl-v"
+                guard let fileSource = env["GHOSTTY_REMOTE_PASTE_SELFTEST_FILE_SOURCE"] else {
+                    throw NSError(
+                        domain: "RemotePasteSelfTest",
+                        code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: "missing file source env"]
+                    )
+                }
+                guard let imageSource = env["GHOSTTY_REMOTE_PASTE_SELFTEST_IMAGE_SOURCE"] else {
+                    throw NSError(
+                        domain: "RemotePasteSelfTest",
+                        code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: "missing image source env"]
+                    )
+                }
+
+                try await Task.sleep(nanoseconds: 1_000_000_000)
+
+                let textEvent = try self.remotePasteSelfTestPasteEvent()
+                setSelfTestClipboardText(textSentinel)
+                guard performKeyEquivalent(with: textEvent) else {
+                    throw NSError(
+                        domain: "RemotePasteSelfTest",
+                        code: 2,
+                        userInfo: [NSLocalizedDescriptionKey: "Ctrl-V was not handled as paste"]
+                    )
+                }
+                try await Task.sleep(nanoseconds: 1_000_000_000)
+                insertRemotePasteText("\n")
+                let textValue = try await waitForRemotePasteSelfTestCapture(
+                    named: "text-capture.txt",
+                    in: root
+                )
+                guard textValue == textSentinel else {
+                    throw NSError(
+                        domain: "RemotePasteSelfTest",
+                        code: 3,
+                        userInfo: [NSLocalizedDescriptionKey: "text paste mismatch: \(textValue)"]
+                    )
+                }
+                reportLines.append("TEXT_VALUE=\(textValue)")
+
+                setSelfTestClipboardFile(URL(fileURLWithPath: fileSource))
+                guard performKeyEquivalent(with: textEvent) else {
+                    throw NSError(
+                        domain: "RemotePasteSelfTest",
+                        code: 4,
+                        userInfo: [NSLocalizedDescriptionKey: "file Ctrl-V was not handled"]
+                    )
+                }
+                try await Task.sleep(nanoseconds: 5_000_000_000)
+                insertRemotePasteText("\n")
+                let fileValue = try await waitForRemotePasteSelfTestCapture(
+                    named: "file-capture.txt",
+                    in: root
+                )
+                let remoteHome = try RemotePasteBridge.testingRemoteHome()
+                guard fileValue.hasPrefix("\(remoteHome)/.tmux/paste-files/") else {
+                    throw NSError(
+                        domain: "RemotePasteSelfTest",
+                        code: 5,
+                        userInfo: [NSLocalizedDescriptionKey: "file paste path mismatch: \(fileValue)"]
+                    )
+                }
+                guard fileValue.hasSuffix("finder_sample_1.txt") else {
+                    throw NSError(
+                        domain: "RemotePasteSelfTest",
+                        code: 6,
+                        userInfo: [NSLocalizedDescriptionKey: "file path not sanitized: \(fileValue)"]
+                    )
+                }
+                guard try RemotePasteBridge.testingRemoteFileExists(at: fileValue) else {
+                    throw NSError(
+                        domain: "RemotePasteSelfTest",
+                        code: 7,
+                        userInfo: [NSLocalizedDescriptionKey: "uploaded file missing: \(fileValue)"]
+                    )
+                }
+                let remoteFileContents = try RemotePasteBridge.testingRemoteFileContents(at: fileValue)
+                guard remoteFileContents == fileSentinel else {
+                    throw NSError(
+                        domain: "RemotePasteSelfTest",
+                        code: 8,
+                        userInfo: [NSLocalizedDescriptionKey: "uploaded file content mismatch: \(remoteFileContents)"]
+                    )
+                }
+                reportLines.append("REMOTE_HOME=\(remoteHome)")
+                reportLines.append("FILE_VALUE=\(fileValue)")
+
+                let imageData = try Data(contentsOf: URL(fileURLWithPath: imageSource))
+                setSelfTestClipboardImage(imageData)
+                guard performKeyEquivalent(with: textEvent) else {
+                    throw NSError(
+                        domain: "RemotePasteSelfTest",
+                        code: 9,
+                        userInfo: [NSLocalizedDescriptionKey: "image Ctrl-V was not handled"]
+                    )
+                }
+                try await Task.sleep(nanoseconds: 5_000_000_000)
+                insertRemotePasteText("\n")
+                let imageValue = try await waitForRemotePasteSelfTestCapture(
+                    named: "image-capture.txt",
+                    in: root
+                )
+                guard imageValue.hasPrefix("\(remoteHome)/.tmux/paste-images/"),
+                      imageValue.hasSuffix(".png") else {
+                    throw NSError(
+                        domain: "RemotePasteSelfTest",
+                        code: 10,
+                        userInfo: [NSLocalizedDescriptionKey: "image paste path mismatch: \(imageValue)"]
+                    )
+                }
+                guard try RemotePasteBridge.testingRemoteFileHasContent(at: imageValue) else {
+                    throw NSError(
+                        domain: "RemotePasteSelfTest",
+                        code: 11,
+                        userInfo: [NSLocalizedDescriptionKey: "uploaded image missing: \(imageValue)"]
+                    )
+                }
+                reportLines.append("IMAGE_VALUE=\(imageValue)")
+
+                reportLines.append("RESULT=PASS")
+                finishRemotePasteSelfTest(root: root, lines: reportLines, exitCode: 0)
+            } catch {
+                reportLines.append("RESULT=FAIL")
+                reportLines.append("ERROR=\(error.localizedDescription)")
+                finishRemotePasteSelfTest(root: root, lines: reportLines, exitCode: 1)
+            }
+        }
+
+        @MainActor
+        private func remotePasteSelfTestPasteEvent() throws -> NSEvent {
+            guard let event = NSEvent.keyEvent(
+                with: .keyDown,
+                location: .zero,
+                modifierFlags: [.control],
+                timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: window?.windowNumber ?? 0,
+                context: nil,
+                characters: "v",
+                charactersIgnoringModifiers: "v",
+                isARepeat: false,
+                keyCode: 9
+            ) else {
+                throw NSError(
+                    domain: "RemotePasteSelfTest",
+                    code: 12,
+                    userInfo: [NSLocalizedDescriptionKey: "failed to synthesize Ctrl-V event"]
+                )
+            }
+
+            return event
+        }
+
+        private func setSelfTestClipboardText(_ text: String) {
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.setString(text, forType: .string)
+        }
+
+        private func setSelfTestClipboardFile(_ fileURL: URL) {
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.writeObjects([fileURL as NSURL])
+        }
+
+        private func setSelfTestClipboardImage(_ data: Data) {
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.setData(data, forType: .png)
+        }
+
+        private func waitForRemotePasteSelfTestCapture(
+            named filename: String,
+            in root: String
+        ) async throws -> String {
+            let url = URL(fileURLWithPath: root).appendingPathComponent(filename)
+            let deadline = Date().addingTimeInterval(10)
+            while Date() < deadline {
+                if FileManager.default.fileExists(atPath: url.path) {
+                    return try String(contentsOf: url, encoding: .utf8)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+                try await Task.sleep(nanoseconds: 250_000_000)
+            }
+
+            throw NSError(
+                domain: "RemotePasteSelfTest",
+                code: 13,
+                userInfo: [NSLocalizedDescriptionKey: "timed out waiting for \(filename)"]
+            )
+        }
+
+        @MainActor
+        private func finishRemotePasteSelfTest(
+            root: String,
+            lines: [String],
+            exitCode: Int32
+        ) {
+            let reportURL = URL(fileURLWithPath: root).appendingPathComponent("report.txt")
+            let report = lines.joined(separator: "\n") + "\n"
+            try? report.write(to: reportURL, atomically: true, encoding: .utf8)
+
+            NSApp.terminate(nil)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                exit(exitCode)
+            }
         }
 
         private func performNativePaste() {

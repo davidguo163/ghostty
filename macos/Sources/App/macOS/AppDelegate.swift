@@ -635,6 +635,22 @@ class AppDelegate: NSObject,
         menu.keyEquivalentModifierMask = .init(swiftUIFlags: shortcut.modifiers)
     }
 
+    func matchesPasteShortcut(event: NSEvent) -> Bool {
+        matchesMenuShortcut(self.menuPaste, event: event)
+    }
+
+    private func matchesMenuShortcut(_ menuItem: NSMenuItem?, event: NSEvent) -> Bool {
+        guard let menuItem,
+              !menuItem.keyEquivalent.isEmpty,
+              let characters = event.charactersIgnoringModifiers?.lowercased()
+        else { return false }
+
+        let relevantFlags: NSEvent.ModifierFlags = [.command, .control, .option, .shift]
+        let eventFlags = event.modifierFlags.intersection(relevantFlags)
+        let menuFlags = menuItem.keyEquivalentModifierMask.intersection(relevantFlags)
+        return characters == menuItem.keyEquivalent.lowercased() && eventFlags == menuFlags
+    }
+
     // MARK: Notifications and Events
 
     /// This handles events from the NSEvent.addLocalEventMonitor. We use this so we can get

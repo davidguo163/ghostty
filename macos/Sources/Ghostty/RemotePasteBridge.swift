@@ -2,6 +2,16 @@ import AppKit
 import Foundation
 
 enum RemotePasteBridge {
+    enum PasteRequest: Sendable {
+        case native
+        case remote(RemotePayload)
+    }
+
+    enum RemotePayload: Sendable {
+        case file(URL)
+        case image(Data)
+    }
+
     enum BridgeError: LocalizedError {
         case unsupportedImage
         case remoteHomeUnavailable
@@ -22,42 +32,85 @@ enum RemotePasteBridge {
     private static let remoteHost =
         ProcessInfo.processInfo.environment["GHOSTTY_REMOTE_PASTE_HOST"] ?? "dev"
     private static let remoteTmuxRootSuffix = ".tmux"
+    private static let commandTimeoutSeconds = 15.0
+    private static let sshOptions = [
+        "-o", "BatchMode=yes",
+        "-o", "ConnectTimeout=5",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "ServerAliveInterval=5",
+        "-o", "ServerAliveCountMax=1",
+    ]
+    private static let stateQueue = DispatchQueue(label: "Ghostty.RemotePasteBridge.State")
+    private static var cachedRemoteHome: String?
 
-    static func remotePastePath(for pasteboard: NSPasteboard) throws -> String? {
+    static func preparePaste(for pasteboard: NSPasteboard) throws -> PasteRequest {
         if let fileURL = singleFileURL(from: pasteboard) {
-            return try uploadFile(fileURL)
+            return .remote(.file(fileURL))
         }
 
         if let imageData = clipboardImageData(from: pasteboard) {
-            return try uploadImageData(imageData)
+            return .remote(.image(imageData))
         }
 
-        return nil
+        if hasPotentialImageData(in: pasteboard) {
+            throw BridgeError.unsupportedImage
+        }
+
+        return .native
+    }
+
+    static func uploadRemotePath(for payload: RemotePayload) throws -> String {
+        switch payload {
+        case let .file(fileURL):
+            return try uploadFile(fileURL)
+        case let .image(imageData):
+            return try uploadImageData(imageData)
+        }
+    }
+
+    static func testingRemoteHome() throws -> String {
+        try resolvedRemoteHome()
+    }
+
+    static func testingRemoteFileExists(at path: String) throws -> Bool {
+        let output = try runRemoteShell(
+            "if [ -f \(Ghostty.Shell.escape(path)) ]; then printf yes; else printf no; fi",
+            failurePrefix: "remote file existence check failed"
+        )
+        return output.trimmingCharacters(in: .whitespacesAndNewlines) == "yes"
+    }
+
+    static func testingRemoteFileHasContent(at path: String) throws -> Bool {
+        let output = try runRemoteShell(
+            "if [ -s \(Ghostty.Shell.escape(path)) ]; then printf yes; else printf no; fi",
+            failurePrefix: "remote file size check failed"
+        )
+        return output.trimmingCharacters(in: .whitespacesAndNewlines) == "yes"
+    }
+
+    static func testingRemoteFileContents(at path: String) throws -> String {
+        try runRemoteShell(
+            "cat \(Ghostty.Shell.escape(path))",
+            failurePrefix: "remote file read failed"
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func singleFileURL(from pasteboard: NSPasteboard) -> URL? {
-        if let urls = pasteboard.readObjects(forClasses: [NSURL.self]) as? [URL],
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [
+            .urlReadingFileURLsOnly: true,
+        ]
+        if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: options) as? [URL],
            urls.count == 1,
            let url = urls.first,
            url.isFileURL {
             return url
         }
 
-        guard let raw = pasteboard.string(forType: .string)?
+        if let raw = pasteboard.string(forType: .fileURL)?
             .trimmingCharacters(in: .whitespacesAndNewlines),
-            !raw.isEmpty,
-            !raw.contains("\n")
-        else {
-            return nil
-        }
-
-        if let url = URL(string: raw), url.isFileURL {
+           let url = URL(string: raw),
+           url.isFileURL {
             return url
-        }
-
-        let expanded = NSString(string: raw).expandingTildeInPath
-        if FileManager.default.fileExists(atPath: expanded) {
-            return URL(fileURLWithPath: expanded)
         }
 
         return nil
@@ -82,6 +135,15 @@ enum RemotePasteBridge {
         }
 
         return nil
+    }
+
+    private static func hasPotentialImageData(in pasteboard: NSPasteboard) -> Bool {
+        let types = pasteboard.types ?? []
+        if types.contains(.png) || types.contains(.tiff) {
+            return true
+        }
+
+        return pasteboard.canReadObject(forClasses: [NSImage.self], options: [:])
     }
 
     private static func uploadFile(_ fileURL: URL) throws -> String {
@@ -123,23 +185,51 @@ enum RemotePasteBridge {
     }
 
     private static func ensureRemoteDirectory(_ remoteDir: String) throws {
+        var arguments = sshOptions
+        arguments.append(remoteHost)
+        arguments.append(contentsOf: ["mkdir", "-p", remoteDir])
         try runProcess(
             "/usr/bin/ssh",
-            [remoteHost, "mkdir", "-p", remoteDir],
+            arguments,
             failurePrefix: "remote directory bootstrap failed"
         )
     }
 
     private static func resolvedRemoteHome() throws -> String {
+        if let cached = stateQueue.sync(execute: { cachedRemoteHome }) {
+            return cached
+        }
+
+        var arguments = sshOptions
+        arguments.append(remoteHost)
+        arguments.append(contentsOf: ["sh", "-lc", "printf %s \"$HOME\""])
         let output = try runProcess(
             "/usr/bin/ssh",
-            [remoteHost, "sh", "-lc", "printf %s \"$HOME\""],
+            arguments,
             failurePrefix: "remote home lookup failed",
             captureStdout: true
         )
         let value = output.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { throw BridgeError.remoteHomeUnavailable }
+        stateQueue.sync {
+            cachedRemoteHome = value
+        }
         return value
+    }
+
+    private static func runRemoteShell(
+        _ command: String,
+        failurePrefix: String
+    ) throws -> String {
+        var arguments = sshOptions
+        arguments.append(remoteHost)
+        arguments.append(contentsOf: ["sh", "-lc", command])
+        return try runProcess(
+            "/usr/bin/ssh",
+            arguments,
+            failurePrefix: failurePrefix,
+            captureStdout: true
+        )
     }
 
     @discardableResult
@@ -155,12 +245,24 @@ enum RemotePasteBridge {
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
-        process.standardOutput = captureStdout ? stdoutPipe : nil
+        let finished = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in
+            finished.signal()
+        }
 
         try process.run()
-        process.waitUntilExit()
+        let waitResult = finished.wait(
+            timeout: .now() + .milliseconds(Int(commandTimeoutSeconds * 1000))
+        )
+        if waitResult == .timedOut {
+            process.terminate()
+            _ = finished.wait(timeout: .now() + .seconds(2))
+            throw BridgeError.processFailed("\(failurePrefix): timed out")
+        }
 
+        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
         let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
         let stderr = String(data: stderrData, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -171,7 +273,6 @@ enum RemotePasteBridge {
         }
 
         if captureStdout {
-            let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
             return String(data: stdoutData, encoding: .utf8) ?? ""
         }
 
