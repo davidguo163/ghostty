@@ -96,6 +96,7 @@ class AppDelegate: NSObject,
         ghostty,
         position: derivedConfig.quickTerminalPosition
     )
+    private var remotePasteSelfTestSurface: Ghostty.SurfaceView? = nil
 
     /// Manages updates
     let updaterController: SPUStandardUpdaterController
@@ -246,13 +247,12 @@ class AppDelegate: NSObject,
         ])
         center.delegate = self
 
-        if ProcessInfo.processInfo.environment["GHOSTTY_REMOTE_PASTE_SELFTEST_ROOT"] != nil,
-           TerminalController.all.isEmpty
+        if let selfTestRoot = ProcessInfo.processInfo.environment["GHOSTTY_REMOTE_PASTE_SELFTEST_ROOT"],
+           let app = ghostty.app
         {
-            applicationHasBecomeActive = true
-            undoManager.disableUndoRegistration()
-            _ = TerminalController.newWindow(ghostty)
-            undoManager.enableUndoRegistration()
+            var config = Ghostty.SurfaceView.SurfaceConfiguration()
+            config.command = "shell:python3 -u \"\(selfTestRoot)/capture.py\" \"\(selfTestRoot)\""
+            remotePasteSelfTestSurface = Ghostty.SurfaceView(app, baseConfig: config)
         }
 
         // Observe our appearance so we can report the correct value to libghostty.
