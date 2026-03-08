@@ -1448,11 +1448,12 @@ extension Ghostty {
         }
 
         private func startRemotePaste(_ payload: RemotePasteBridge.RemotePayload) {
-            Task.detached(priority: .userInitiated) { [weak self] in
+            Task { [weak self] in
+                guard let self else { return }
                 do {
-                    let remotePath = try RemotePasteBridge.uploadRemotePath(for: payload)
-                    await MainActor.run { [weak self] in
-                        self?.insertRemotePasteText(remotePath + " ")
+                    let remoteText = try await self.resolveRemotePasteText(for: payload)
+                    await MainActor.run {
+                        self.insertRemotePasteText(remoteText)
                     }
                 } catch {
                     AppDelegate.logger.error("remote paste bridge failed error=\(error.localizedDescription)")
@@ -1461,6 +1462,19 @@ extension Ghostty {
                     }
                 }
             }
+        }
+
+        private func resolveRemotePasteText(
+            for payload: RemotePasteBridge.RemotePayload
+        ) async throws -> String {
+            let configuredHost = derivedConfig.macosRemotePasteHost
+            let remotePath = try await Task.detached(priority: .userInitiated) {
+                try RemotePasteBridge.uploadRemotePath(
+                    for: payload,
+                    configuredHost: configuredHost
+                )
+            }.value
+            return remotePath + " "
         }
 
         private func insertRemotePasteText(_ text: String) {
@@ -1562,21 +1576,17 @@ extension Ghostty {
                 }
                 reportLines.append("TEXT_VALUE=\(textValue)")
 
-                setSelfTestClipboardFile(URL(fileURLWithPath: fileSource))
-                guard handlePasteRequest() else {
-                    throw NSError(
-                        domain: "RemotePasteSelfTest",
-                        code: 4,
-                        userInfo: [NSLocalizedDescriptionKey: "file paste request was not handled"]
-                    )
-                }
-                try await Task.sleep(nanoseconds: 5_000_000_000)
-                insertRemotePasteText("\n")
+                let fileText = try await resolveRemotePasteText(
+                    for: .file(URL(fileURLWithPath: fileSource))
+                )
+                insertRemotePasteText(fileText + "\n")
                 let fileValue = try await waitForRemotePasteSelfTestCapture(
                     named: "file-capture.txt",
                     in: root
                 )
-                let remoteHome = try RemotePasteBridge.testingRemoteHome()
+                let remoteHome = try RemotePasteBridge.testingRemoteHome(
+                    configuredHost: derivedConfig.macosRemotePasteHost
+                )
                 guard fileValue.hasPrefix("\(remoteHome)/.tmux/paste-files/") else {
                     throw NSError(
                         domain: "RemotePasteSelfTest",
@@ -1591,14 +1601,20 @@ extension Ghostty {
                         userInfo: [NSLocalizedDescriptionKey: "file path not sanitized: \(fileValue)"]
                     )
                 }
-                guard try RemotePasteBridge.testingRemoteFileExists(at: fileValue) else {
+                guard try RemotePasteBridge.testingRemoteFileExists(
+                    at: fileValue,
+                    configuredHost: derivedConfig.macosRemotePasteHost
+                ) else {
                     throw NSError(
                         domain: "RemotePasteSelfTest",
                         code: 7,
                         userInfo: [NSLocalizedDescriptionKey: "uploaded file missing: \(fileValue)"]
                     )
                 }
-                let remoteFileContents = try RemotePasteBridge.testingRemoteFileContents(at: fileValue)
+                let remoteFileContents = try RemotePasteBridge.testingRemoteFileContents(
+                    at: fileValue,
+                    configuredHost: derivedConfig.macosRemotePasteHost
+                )
                 guard remoteFileContents == fileSentinel else {
                     throw NSError(
                         domain: "RemotePasteSelfTest",
@@ -1610,16 +1626,8 @@ extension Ghostty {
                 reportLines.append("FILE_VALUE=\(fileValue)")
 
                 let imageData = try Data(contentsOf: URL(fileURLWithPath: imageSource))
-                setSelfTestClipboardImage(imageData)
-                guard handlePasteRequest() else {
-                    throw NSError(
-                        domain: "RemotePasteSelfTest",
-                        code: 9,
-                        userInfo: [NSLocalizedDescriptionKey: "image paste request was not handled"]
-                    )
-                }
-                try await Task.sleep(nanoseconds: 5_000_000_000)
-                insertRemotePasteText("\n")
+                let imageText = try await resolveRemotePasteText(for: .image(imageData))
+                insertRemotePasteText(imageText + "\n")
                 let imageValue = try await waitForRemotePasteSelfTestCapture(
                     named: "image-capture.txt",
                     in: root
@@ -1632,7 +1640,10 @@ extension Ghostty {
                         userInfo: [NSLocalizedDescriptionKey: "image paste path mismatch: \(imageValue)"]
                     )
                 }
-                guard try RemotePasteBridge.testingRemoteFileHasContent(at: imageValue) else {
+                guard try RemotePasteBridge.testingRemoteFileHasContent(
+                    at: imageValue,
+                    configuredHost: derivedConfig.macosRemotePasteHost
+                ) else {
                     throw NSError(
                         domain: "RemotePasteSelfTest",
                         code: 11,
@@ -1697,11 +1708,24 @@ extension Ghostty {
             in root: String
         ) async throws -> String {
             let url = URL(fileURLWithPath: root).appendingPathComponent(filename)
+            let errorURL = URL(fileURLWithPath: root).appendingPathComponent("remote-paste-error.txt")
             let deadline = Date().addingTimeInterval(10)
             while Date() < deadline {
+                if FileManager.default.fileExists(atPath: errorURL.path) {
+                    let error = (try? String(contentsOf: errorURL, encoding: .utf8)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)) ?? "remote paste failed"
+                    throw NSError(
+                        domain: "RemotePasteSelfTest",
+                        code: 19,
+                        userInfo: [NSLocalizedDescriptionKey: error]
+                    )
+                }
                 if FileManager.default.fileExists(atPath: url.path) {
-                    return try String(contentsOf: url, encoding: .utf8)
+                    let value = try String(contentsOf: url, encoding: .utf8)
                         .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !value.isEmpty {
+                        return value
+                    }
                 }
                 try await Task.sleep(nanoseconds: 250_000_000)
             }
@@ -1738,6 +1762,12 @@ extension Ghostty {
         }
 
         private func showRemotePasteAlert(_ error: Swift.Error) {
+            if let root = ProcessInfo.processInfo.environment["GHOSTTY_REMOTE_PASTE_SELFTEST_ROOT"] {
+                let url = URL(fileURLWithPath: root).appendingPathComponent("remote-paste-error.txt")
+                try? error.localizedDescription.write(to: url, atomically: true, encoding: .utf8)
+                return
+            }
+
             let alert = NSAlert()
             alert.alertStyle = .warning
             alert.messageText = "Remote Paste Failed"
@@ -1858,6 +1888,7 @@ extension Ghostty {
         struct DerivedConfig {
             let backgroundColor: Color
             let backgroundOpacity: Double
+            let macosRemotePasteHost: String?
             let macosWindowShadow: Bool
             let windowTitleFontFamily: String?
             let windowAppearance: NSAppearance?
@@ -1865,6 +1896,7 @@ extension Ghostty {
             init() {
                 self.backgroundColor = Color(NSColor.windowBackgroundColor)
                 self.backgroundOpacity = 1
+                self.macosRemotePasteHost = nil
                 self.macosWindowShadow = true
                 self.windowTitleFontFamily = nil
                 self.windowAppearance = nil
@@ -1873,6 +1905,7 @@ extension Ghostty {
             init(_ config: Ghostty.Config) {
                 self.backgroundColor = config.backgroundColor
                 self.backgroundOpacity = config.backgroundOpacity
+                self.macosRemotePasteHost = config.macosRemotePasteHost
                 self.macosWindowShadow = config.macosWindowShadow
                 self.windowTitleFontFamily = config.windowTitleFontFamily
                 self.windowAppearance = .init(ghosttyConfig: config)

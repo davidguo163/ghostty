@@ -29,33 +29,19 @@ enum RemotePasteBridge {
         }
     }
 
-    private static let remoteHost: String = {
-        let env = ProcessInfo.processInfo.environment
-        if let explicit = env["GHOSTTY_REMOTE_PASTE_HOST"]?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-           !explicit.isEmpty {
-            return explicit
-        }
-
-        if let configured = UserDefaults.standard.string(forKey: "RemotePasteHost")?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-           !configured.isEmpty {
-            return configured
-        }
-
-        return "dev"
-    }()
+    private static let defaultRemoteHost = "dev"
     private static let remoteTmuxRootSuffix = ".tmux"
     private static let commandTimeoutSeconds = 15.0
     private static let sshOptions = [
         "-o", "BatchMode=yes",
         "-o", "ConnectTimeout=5",
         "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
         "-o", "ServerAliveInterval=5",
         "-o", "ServerAliveCountMax=1",
     ]
     private static let stateQueue = DispatchQueue(label: "Ghostty.RemotePasteBridge.State")
-    private static var cachedRemoteHome: String?
+    private static var cachedRemoteHomes: [String: String] = [:]
 
     static func preparePaste(for pasteboard: NSPasteboard) throws -> PasteRequest {
         if let fileURL = singleFileURL(from: pasteboard) {
@@ -73,38 +59,54 @@ enum RemotePasteBridge {
         return .native
     }
 
-    static func uploadRemotePath(for payload: RemotePayload) throws -> String {
+    static func uploadRemotePath(
+        for payload: RemotePayload,
+        configuredHost: String?
+    ) throws -> String {
         switch payload {
         case let .file(fileURL):
-            return try uploadFile(fileURL)
+            return try uploadFile(fileURL, configuredHost: configuredHost)
         case let .image(imageData):
-            return try uploadImageData(imageData)
+            return try uploadImageData(imageData, configuredHost: configuredHost)
         }
     }
 
-    static func testingRemoteHome() throws -> String {
-        try resolvedRemoteHome()
+    static func testingRemoteHome(configuredHost: String?) throws -> String {
+        let host = resolvedRemoteHost(configuredHost: configuredHost)
+        return try resolvedRemoteHome(host: host)
     }
 
-    static func testingRemoteFileExists(at path: String) throws -> Bool {
+    static func testingRemoteFileExists(
+        at path: String,
+        configuredHost: String?
+    ) throws -> Bool {
         let output = try runRemoteShell(
             "if [ -f \(Ghostty.Shell.escape(path)) ]; then printf yes; else printf no; fi",
+            configuredHost: configuredHost,
             failurePrefix: "remote file existence check failed"
         )
         return output.trimmingCharacters(in: .whitespacesAndNewlines) == "yes"
     }
 
-    static func testingRemoteFileHasContent(at path: String) throws -> Bool {
+    static func testingRemoteFileHasContent(
+        at path: String,
+        configuredHost: String?
+    ) throws -> Bool {
         let output = try runRemoteShell(
             "if [ -s \(Ghostty.Shell.escape(path)) ]; then printf yes; else printf no; fi",
+            configuredHost: configuredHost,
             failurePrefix: "remote file size check failed"
         )
         return output.trimmingCharacters(in: .whitespacesAndNewlines) == "yes"
     }
 
-    static func testingRemoteFileContents(at path: String) throws -> String {
+    static func testingRemoteFileContents(
+        at path: String,
+        configuredHost: String?
+    ) throws -> String {
         try runRemoteShell(
             "cat \(Ghostty.Shell.escape(path))",
+            configuredHost: configuredHost,
             failurePrefix: "remote file read failed"
         ).trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -160,25 +162,33 @@ enum RemotePasteBridge {
         return pasteboard.canReadObject(forClasses: [NSImage.self], options: [:])
     }
 
-    private static func uploadFile(_ fileURL: URL) throws -> String {
-        let remoteHome = try resolvedRemoteHome()
+    private static func uploadFile(
+        _ fileURL: URL,
+        configuredHost: String?
+    ) throws -> String {
+        let host = resolvedRemoteHost(configuredHost: configuredHost)
+        let remoteHome = try resolvedRemoteHome(host: host)
         let timestamp = timestampString()
         let basename = sanitizeFilename(fileURL.lastPathComponent.isEmpty ? "attachment" : fileURL.lastPathComponent)
         let remoteDir = "\(remoteHome)/\(remoteTmuxRootSuffix)/paste-files"
         let remotePath = "\(remoteDir)/\(timestamp)-\(basename)"
 
-        try ensureRemoteDirectory(remoteDir)
+        try ensureRemoteDirectory(remoteDir, host: host)
         try runProcess(
             "/usr/bin/scp",
-            ["-q", fileURL.path, "\(remoteHost):\(remotePath)"],
+            ["-q", fileURL.path, "\(host):\(remotePath)"],
             failurePrefix: "scp file upload failed"
         )
 
         return Ghostty.Shell.escape(remotePath)
     }
 
-    private static func uploadImageData(_ imageData: Data) throws -> String {
-        let remoteHome = try resolvedRemoteHome()
+    private static func uploadImageData(
+        _ imageData: Data,
+        configuredHost: String?
+    ) throws -> String {
+        let host = resolvedRemoteHost(configuredHost: configuredHost)
+        let remoteHome = try resolvedRemoteHome(host: host)
         let timestamp = timestampString()
         let remoteDir = "\(remoteHome)/\(remoteTmuxRootSuffix)/paste-images"
         let remotePath = "\(remoteDir)/paste-\(timestamp).png"
@@ -188,19 +198,19 @@ enum RemotePasteBridge {
         try imageData.write(to: localURL, options: .atomic)
         defer { try? FileManager.default.removeItem(at: localURL) }
 
-        try ensureRemoteDirectory(remoteDir)
+        try ensureRemoteDirectory(remoteDir, host: host)
         try runProcess(
             "/usr/bin/scp",
-            ["-q", localURL.path, "\(remoteHost):\(remotePath)"],
+            ["-q", localURL.path, "\(host):\(remotePath)"],
             failurePrefix: "scp image upload failed"
         )
 
         return Ghostty.Shell.escape(remotePath)
     }
 
-    private static func ensureRemoteDirectory(_ remoteDir: String) throws {
+    private static func ensureRemoteDirectory(_ remoteDir: String, host: String) throws {
         var arguments = sshOptions
-        arguments.append(remoteHost)
+        arguments.append(host)
         arguments.append(contentsOf: ["mkdir", "-p", remoteDir])
         try runProcess(
             "/usr/bin/ssh",
@@ -209,14 +219,14 @@ enum RemotePasteBridge {
         )
     }
 
-    private static func resolvedRemoteHome() throws -> String {
-        if let cached = stateQueue.sync(execute: { cachedRemoteHome }) {
+    private static func resolvedRemoteHome(host: String) throws -> String {
+        if let cached = stateQueue.sync(execute: { cachedRemoteHomes[host] }) {
             return cached
         }
 
         var arguments = sshOptions
-        arguments.append(remoteHost)
-        arguments.append(contentsOf: ["sh", "-lc", "printf %s \"$HOME\""])
+        arguments.append(host)
+        arguments.append(contentsOf: ["printenv", "HOME"])
         let output = try runProcess(
             "/usr/bin/ssh",
             arguments,
@@ -226,24 +236,48 @@ enum RemotePasteBridge {
         let value = output.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { throw BridgeError.remoteHomeUnavailable }
         stateQueue.sync {
-            cachedRemoteHome = value
+            cachedRemoteHomes[host] = value
         }
         return value
     }
 
     private static func runRemoteShell(
         _ command: String,
+        configuredHost: String?,
         failurePrefix: String
     ) throws -> String {
+        let host = resolvedRemoteHost(configuredHost: configuredHost)
         var arguments = sshOptions
-        arguments.append(remoteHost)
-        arguments.append(contentsOf: ["sh", "-lc", command])
+        arguments.append(host)
+        arguments.append("sh -lc \(singleQuote(command))")
         return try runProcess(
             "/usr/bin/ssh",
             arguments,
             failurePrefix: failurePrefix,
             captureStdout: true
         )
+    }
+
+    private static func resolvedRemoteHost(configuredHost: String?) -> String {
+        let env = ProcessInfo.processInfo.environment
+        if let explicit = env["GHOSTTY_REMOTE_PASTE_HOST"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !explicit.isEmpty {
+            return explicit
+        }
+
+        if let configured = configuredHost?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !configured.isEmpty {
+            return configured
+        }
+
+        return defaultRemoteHost
+    }
+
+    private static func singleQuote(_ value: String) -> String {
+        let escaped = value.replacingOccurrences(of: "'", with: "'\"'\"'")
+        return "'\(escaped)'"
     }
 
     @discardableResult

@@ -2741,6 +2741,22 @@ keybind: Keybinds = .{},
 /// platforms.
 @"macos-dock-drop-behavior": MacOSDockDropBehavior = .@"new-tab",
 
+/// The SSH host or alias used by the macOS remote paste bridge when
+/// `Cmd+Shift+V` uploads a clipboard image or file to a remote machine.
+///
+/// This value should be something that `ssh` and `scp` can resolve, such as
+/// a host alias in your SSH config. This setting is only used by the macOS
+/// remote paste bridge and has no effect on other platforms.
+///
+/// The environment variable `GHOSTTY_REMOTE_PASTE_HOST` overrides this value
+/// for automation and self-test workflows.
+///
+/// If this is unset, the macOS remote paste bridge falls back to `dev`.
+///
+/// Changing this option at runtime applies to existing terminals the next
+/// time remote paste is used.
+@"macos-remote-paste-host": ?[:0]const u8 = null,
+
 /// macOS doesn't have a distinct "alt" key and instead has the "option"
 /// key which behaves slightly differently. On macOS by default, the
 /// option key plus a character will sometimes produce a Unicode character.
