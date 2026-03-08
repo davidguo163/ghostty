@@ -99,6 +99,7 @@
 		A599CDB02CF103F60049FA26 /* NSAppearance+Extension.swift in Sources */ = {isa = PBXBuildFile; fileRef = A599CDAF2CF103F20049FA26 /* NSAppearance+Extension.swift */; };
 		A59FB5CF2AE0DB50009128F3 /* InspectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A59FB5CE2AE0DB50009128F3 /* InspectorView.swift */; };
 		A59FB5D12AE0DEA7009128F3 /* MetalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A59FB5D02AE0DEA7009128F3 /* MetalView.swift */; };
+		B1A0A0022E10000100AA0001 /* RemotePasteBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1A0A0012E10000100AA0001 /* RemotePasteBridge.swift */; };
 		A5A1F8852A489D6800D1E8BC /* terminfo in Resources */ = {isa = PBXBuildFile; fileRef = A5A1F8842A489D6800D1E8BC /* terminfo */; };
 		A5A2A3CA2D4445E30033CF96 /* Dock.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5A2A3C92D4445E20033CF96 /* Dock.swift */; };
 		A5A2A3CC2D444ABB0033CF96 /* NSApplication+Extension.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5A2A3CB2D444AB80033CF96 /* NSApplication+Extension.swift */; };
@@ -251,6 +252,7 @@
 		A599CDAF2CF103F20049FA26 /* NSAppearance+Extension.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NSAppearance+Extension.swift"; sourceTree = "<group>"; };
 		A59FB5CE2AE0DB50009128F3 /* InspectorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InspectorView.swift; sourceTree = "<group>"; };
 		A59FB5D02AE0DEA7009128F3 /* MetalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetalView.swift; sourceTree = "<group>"; };
+		B1A0A0012E10000100AA0001 /* RemotePasteBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemotePasteBridge.swift; sourceTree = "<group>"; };
 		A5A1F8842A489D6800D1E8BC /* terminfo */ = {isa = PBXFileReference; lastKnownFileType = folder; name = terminfo; path = "../zig-out/share/terminfo"; sourceTree = "<group>"; };
 		A5A2A3C92D4445E20033CF96 /* Dock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Dock.swift; sourceTree = "<group>"; };
 		A5A2A3CB2D444AB80033CF96 /* NSApplication+Extension.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NSApplication+Extension.swift"; sourceTree = "<group>"; };
@@ -511,6 +513,7 @@
 				A5E4083B2E044DB40035FEAC /* Ghostty.Error.swift */,
 				A5CF66D62D29DDB100139794 /* Ghostty.Event.swift */,
 				A5278A9A2AA05B2600CD3039 /* Ghostty.Input.swift */,
+				B1A0A0012E10000100AA0001 /* RemotePasteBridge.swift */,
 				A56D58852ACDDB4100508D2C /* Ghostty.Shell.swift */,
 				A5E408372E03C7D80035FEAC /* Ghostty.Surface.swift */,
 				A52FFF5A2CAA54A8000C6A5B /* FullscreenMode+Extension.swift */,
@@ -879,7 +882,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				A5AEB1652D5BE7D000513529 /* LastWindowPosition.swift in Sources */,
-				A5E408432E047D0B0035FEAC /* CommandPaletteIntent.swift in Sources */,
 				A514C8D62B54A16400493A16 /* Ghostty.Config.swift in Sources */,
 				A54B0CEB2D0CFB4C00CBEFF8 /* NSImage+Extension.swift in Sources */,
 				A5874D9D2DAD786100E83852 /* NSWindow+Extension.swift in Sources */,
@@ -895,10 +897,8 @@
 				C1F26EA72B738B9900404083 /* NSView+Extension.swift in Sources */,
 				A586366F2DF25D8600E04A10 /* Duration+Extension.swift in Sources */,
 				A5CF66D42D289CEE00139794 /* NSEvent+Extension.swift in Sources */,
-				A5E408342E0320140035FEAC /* GetTerminalDetailsIntent.swift in Sources */,
 				A5CBD0642CA122E70017A1AE /* QuickTerminalPosition.swift in Sources */,
 				A596309C2AEE1C9E00D64628 /* TerminalController.swift in Sources */,
-				A5E408322E02FEDF0035FEAC /* TerminalEntity.swift in Sources */,
 				A5CC36152C9CDA06004D6760 /* View+Extension.swift in Sources */,
 				A56D58892ACDE6CA00508D2C /* ServiceProvider.swift in Sources */,
 				A5CBD0602CA0C90A0017A1AE /* QuickTerminalWindow.swift in Sources */,
@@ -906,7 +906,6 @@
 				A505D21F2E1B6DE00018808F /* NSWorkspace+Extension.swift in Sources */,
 				A5CBD05E2CA0C5EC0017A1AE /* QuickTerminalController.swift in Sources */,
 				A5CF66D72D29DDB500139794 /* Ghostty.Event.swift in Sources */,
-				A511940F2E050595007258CC /* CloseTerminalIntent.swift in Sources */,
 				A5E408382E03C7DA0035FEAC /* Ghostty.Surface.swift in Sources */,
 				A5593FE72DF927D200B47B10 /* TransparentTitlebarTerminalWindow.swift in Sources */,
 				A5A2A3CA2D4445E30033CF96 /* Dock.swift in Sources */,
@@ -917,7 +916,6 @@
 				A53F889C2EAA930F00F1C56B /* QuickTerminalScreenStateCache.swift in Sources */,
 				A50297352DFA0F3400B4E924 /* Double+Extension.swift in Sources */,
 				A5CBD0562C9E65B80017A1AE /* DraggableWindowView.swift in Sources */,
-				A51194112E05A483007258CC /* QuickTerminalIntent.swift in Sources */,
 				C1F26EE92B76CBFC00404083 /* VibrantLayer.m in Sources */,
 				A5593FDF2DF8D57C00B47B10 /* TerminalWindow.swift in Sources */,
 				A58636712DF298FB00E04A10 /* ExpiringUndoManager.swift in Sources */,
@@ -926,12 +924,12 @@
 				A5CBD06B2CA322430017A1AE /* GlobalEventTap.swift in Sources */,
 				AEE8B3452B9AA39600260C5E /* NSPasteboard+Extension.swift in Sources */,
 				A51194172E05D964007258CC /* PermissionRequest.swift in Sources */,
-				A51194192E05DFC4007258CC /* IntentPermission.swift in Sources */,
 				A52FFF5D2CAB4D08000C6A5B /* NSScreen+Extension.swift in Sources */,
 				A53426352A7DA53D00EBB7A2 /* AppDelegate.swift in Sources */,
 				A5CBD0582C9F30960017A1AE /* Cursor.swift in Sources */,
 				A5A6F72A2CC41B8900B232A5 /* AppInfo.swift in Sources */,
 				A52FFF5B2CAA54B1000C6A5B /* FullscreenMode+Extension.swift in Sources */,
+				B1A0A0022E10000100AA0001 /* RemotePasteBridge.swift in Sources */,
 				A5333E222B5A2128008AEFF7 /* SurfaceView_AppKit.swift in Sources */,
 				A5CA378E2D31D6C300931030 /* Weak.swift in Sources */,
 				A5CDF1952AAFA19600513312 /* ConfigurationErrorsView.swift in Sources */,
@@ -940,18 +938,14 @@
 				A5B4EA852DFE691B0022C3A2 /* NSMenuItem+Extension.swift in Sources */,
 				A5874D992DAD751B00E83852 /* CGS.swift in Sources */,
 				A586366B2DF0A98C00E04A10 /* Array+Extension.swift in Sources */,
-				A5E408472E04852B0035FEAC /* InputIntent.swift in Sources */,
 				A51544FE2DFB111C009E85D8 /* TitlebarTabsTahoeTerminalWindow.swift in Sources */,
 				A59444F729A2ED5200725BBA /* SettingsView.swift in Sources */,
 				A56D58862ACDDB4100508D2C /* Ghostty.Shell.swift in Sources */,
 				A5985CD72C320C4500C57AD3 /* String+Extension.swift in Sources */,
 				A5A2A3CC2D444ABB0033CF96 /* NSApplication+Extension.swift in Sources */,
-				A5E408302E0271320035FEAC /* GhosttyIntentError.swift in Sources */,
 				A5E4083A2E0449BD0035FEAC /* Ghostty.Command.swift in Sources */,
-				A5E408452E0483FD0035FEAC /* KeybindIntent.swift in Sources */,
 				A5FEB3002ABB69450068369E /* main.swift in Sources */,
 				A53A297F2DB4480F00B6E02C /* EventModifiers+Extension.swift in Sources */,
-				A5E4082E2E0237460035FEAC /* NewTerminalIntent.swift in Sources */,
 				A53A297B2DB2E49700B6E02C /* CommandPalette.swift in Sources */,
 				A55B7BB829B6F53A0055DE60 /* Package.swift in Sources */,
 				A51B78472AF4B58B00F3EDB9 /* TitlebarTabsVenturaTerminalWindow.swift in Sources */,
@@ -973,7 +967,6 @@
 				A599CDB02CF103F60049FA26 /* NSAppearance+Extension.swift in Sources */,
 				A52FFF572CA90484000C6A5B /* QuickTerminalScreen.swift in Sources */,
 				A5CC36132C9CD72D004D6760 /* SecureInputOverlay.swift in Sources */,
-				A5E408402E04532C0035FEAC /* CommandEntity.swift in Sources */,
 				A5E4082A2E022E9E0035FEAC /* TabGroupCloseCoordinator.swift in Sources */,
 				A535B9DA299C569B0017E2E4 /* ErrorView.swift in Sources */,
 				A53A29882DB69D2F00B6E02C /* TerminalCommandPalette.swift in Sources */,

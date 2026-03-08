@@ -1401,6 +1401,26 @@ extension Ghostty {
         }
 
         @IBAction func paste(_ sender: Any?) {
+            do {
+                if let remotePath = try RemotePasteBridge.remotePastePath(for: .general) {
+                    insertText(remotePath + " ", replacementRange: NSRange(location: 0, length: 0))
+                    return
+                }
+            } catch {
+                AppDelegate.logger.error("remote paste bridge failed error=\(error.localizedDescription)")
+                showRemotePasteAlert(error)
+                return
+            }
+
+            performNativePaste()
+        }
+
+
+        @IBAction func pasteAsPlainText(_ sender: Any?) {
+            performNativePaste()
+        }
+
+        private func performNativePaste() {
             guard let surface = self.surface else { return }
             let action = "paste_from_clipboard"
             if (!ghostty_surface_binding_action(surface, action, UInt(action.count))) {
@@ -1408,13 +1428,13 @@ extension Ghostty {
             }
         }
 
-
-        @IBAction func pasteAsPlainText(_ sender: Any?) {
-            guard let surface = self.surface else { return }
-            let action = "paste_from_clipboard"
-            if (!ghostty_surface_binding_action(surface, action, UInt(action.count))) {
-                AppDelegate.logger.warning("action failed action=\(action)")
-            }
+        private func showRemotePasteAlert(_ error: Swift.Error) {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "Remote Paste Failed"
+            alert.informativeText = error.localizedDescription
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
         }
 
         @IBAction func pasteSelection(_ sender: Any?) {

@@ -5633,6 +5633,13 @@ pub const Keybinds = struct {
                 .{ .key = .{ .unicode = 'v' }, .mods = mods },
                 .{ .paste_from_clipboard = {} },
             );
+            if (builtin.target.os.tag.isDarwin()) {
+                try self.set.put(
+                    alloc,
+                    .{ .key = .{ .unicode = 'v' }, .mods = .{ .ctrl = true } },
+                    .{ .paste_from_clipboard = {} },
+                );
+            }
         }
 
         // Increase font size mapping for keyboards with dedicated plus keys (like german)
