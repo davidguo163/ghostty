@@ -1233,7 +1233,7 @@ extension Ghostty {
                 return false
             }
 
-            return appDelegate.matchesPasteShortcut(event: event)
+            return appDelegate.matchesRemotePasteShortcut(event: event)
         }
 
         override func flagsChanged(with event: NSEvent) {
@@ -1504,8 +1504,8 @@ extension Ghostty {
                     attributes: nil
                 )
 
-                let textSentinel = "ghostty-text-ctrl-v"
-                let fileSentinel = "ghostty-file-ctrl-v"
+                let textSentinel = "ghostty-text-cmd-shift-v"
+                let fileSentinel = "ghostty-file-cmd-shift-v"
                 guard let fileSource = env["GHOSTTY_REMOTE_PASTE_SELFTEST_FILE_SOURCE"] else {
                     throw NSError(
                         domain: "RemotePasteSelfTest",
@@ -1521,15 +1521,30 @@ extension Ghostty {
                     )
                 }
 
-                try await Task.sleep(nanoseconds: 1_000_000_000)
-
-                let textEvent = try self.remotePasteSelfTestPasteEvent()
+                let captureStarted = try await waitForRemotePasteSelfTestCapture(
+                    named: "capture-started.txt",
+                    in: root
+                )
+                guard captureStarted == "started" else {
+                    throw NSError(
+                        domain: "RemotePasteSelfTest",
+                        code: 15,
+                        userInfo: [NSLocalizedDescriptionKey: "capture process did not start"]
+                    )
+                }
+                guard isRemoteAwarePasteKeyEquivalent(try self.remotePasteSelfTestPasteEvent()) else {
+                    throw NSError(
+                        domain: "RemotePasteSelfTest",
+                        code: 16,
+                        userInfo: [NSLocalizedDescriptionKey: "Cmd-Shift-V shortcut was not recognized"]
+                    )
+                }
                 setSelfTestClipboardText(textSentinel)
-                guard performKeyEquivalent(with: textEvent) else {
+                guard handlePasteRequest() else {
                     throw NSError(
                         domain: "RemotePasteSelfTest",
                         code: 2,
-                        userInfo: [NSLocalizedDescriptionKey: "Ctrl-V was not handled as paste"]
+                        userInfo: [NSLocalizedDescriptionKey: "paste request was not handled"]
                     )
                 }
                 try await Task.sleep(nanoseconds: 1_000_000_000)
@@ -1548,11 +1563,11 @@ extension Ghostty {
                 reportLines.append("TEXT_VALUE=\(textValue)")
 
                 setSelfTestClipboardFile(URL(fileURLWithPath: fileSource))
-                guard performKeyEquivalent(with: textEvent) else {
+                guard handlePasteRequest() else {
                     throw NSError(
                         domain: "RemotePasteSelfTest",
                         code: 4,
-                        userInfo: [NSLocalizedDescriptionKey: "file Ctrl-V was not handled"]
+                        userInfo: [NSLocalizedDescriptionKey: "file paste request was not handled"]
                     )
                 }
                 try await Task.sleep(nanoseconds: 5_000_000_000)
@@ -1596,11 +1611,11 @@ extension Ghostty {
 
                 let imageData = try Data(contentsOf: URL(fileURLWithPath: imageSource))
                 setSelfTestClipboardImage(imageData)
-                guard performKeyEquivalent(with: textEvent) else {
+                guard handlePasteRequest() else {
                     throw NSError(
                         domain: "RemotePasteSelfTest",
                         code: 9,
-                        userInfo: [NSLocalizedDescriptionKey: "image Ctrl-V was not handled"]
+                        userInfo: [NSLocalizedDescriptionKey: "image paste request was not handled"]
                     )
                 }
                 try await Task.sleep(nanoseconds: 5_000_000_000)
@@ -1640,7 +1655,7 @@ extension Ghostty {
             guard let event = NSEvent.keyEvent(
                 with: .keyDown,
                 location: .zero,
-                modifierFlags: [.control],
+                modifierFlags: [.command, .shift],
                 timestamp: ProcessInfo.processInfo.systemUptime,
                 windowNumber: window?.windowNumber ?? 0,
                 context: nil,
@@ -1652,7 +1667,7 @@ extension Ghostty {
                 throw NSError(
                     domain: "RemotePasteSelfTest",
                     code: 12,
-                    userInfo: [NSLocalizedDescriptionKey: "failed to synthesize Ctrl-V event"]
+                    userInfo: [NSLocalizedDescriptionKey: "failed to synthesize Cmd-Shift-V event"]
                 )
             }
 

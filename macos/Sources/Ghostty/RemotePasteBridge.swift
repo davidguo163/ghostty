@@ -29,8 +29,22 @@ enum RemotePasteBridge {
         }
     }
 
-    private static let remoteHost =
-        ProcessInfo.processInfo.environment["GHOSTTY_REMOTE_PASTE_HOST"] ?? "dev"
+    private static let remoteHost: String = {
+        let env = ProcessInfo.processInfo.environment
+        if let explicit = env["GHOSTTY_REMOTE_PASTE_HOST"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !explicit.isEmpty {
+            return explicit
+        }
+
+        if let configured = UserDefaults.standard.string(forKey: "RemotePasteHost")?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !configured.isEmpty {
+            return configured
+        }
+
+        return "dev"
+    }()
     private static let remoteTmuxRootSuffix = ".tmux"
     private static let commandTimeoutSeconds = 15.0
     private static let sshOptions = [

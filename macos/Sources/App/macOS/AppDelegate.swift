@@ -96,7 +96,9 @@ class AppDelegate: NSObject,
         ghostty,
         position: derivedConfig.quickTerminalPosition
     )
-    private var remotePasteSelfTestSurface: Ghostty.SurfaceView? = nil
+    private var remotePasteSelfTestController: TerminalController? = nil
+    private let isRemotePasteSelfTest =
+        ProcessInfo.processInfo.environment["GHOSTTY_REMOTE_PASTE_SELFTEST_ROOT"] != nil
 
     /// Manages updates
     let updaterController: SPUStandardUpdaterController
@@ -247,12 +249,16 @@ class AppDelegate: NSObject,
         ])
         center.delegate = self
 
-        if let selfTestRoot = ProcessInfo.processInfo.environment["GHOSTTY_REMOTE_PASTE_SELFTEST_ROOT"],
-           let app = ghostty.app
+        if let selfTestRoot = ProcessInfo.processInfo.environment["GHOSTTY_REMOTE_PASTE_SELFTEST_ROOT"]
         {
             var config = Ghostty.SurfaceConfiguration()
-            config.command = "shell:python3 -u \"\(selfTestRoot)/capture.py\" \"\(selfTestRoot)\""
-            remotePasteSelfTestSurface = Ghostty.SurfaceView(app, baseConfig: config)
+            config.workingDirectory = selfTestRoot
+            config.initialInput = "python3 -u \"\(selfTestRoot)/capture.py\" \"\(selfTestRoot)\"\n"
+            config.waitAfterCommand = true
+            remotePasteSelfTestController = TerminalController.newWindow(
+                ghostty,
+                withBaseConfig: config
+            )
         }
 
         // Observe our appearance so we can report the correct value to libghostty.
@@ -317,7 +323,7 @@ class AppDelegate: NSObject,
             // is possible to have other windows in a few scenarios:
             //   - if we're opening a URL since `application(_:openFile:)` is called before this.
             //   - if we're restoring from persisted state
-            if TerminalController.all.isEmpty && derivedConfig.initialWindow {
+            if !isRemotePasteSelfTest && TerminalController.all.isEmpty && derivedConfig.initialWindow {
                 undoManager.disableUndoRegistration()
                 _ = TerminalController.newWindow(ghostty)
                 undoManager.enableUndoRegistration()
@@ -644,8 +650,11 @@ class AppDelegate: NSObject,
         menu.keyEquivalentModifierMask = .init(swiftUIFlags: shortcut.modifiers)
     }
 
-    func matchesPasteShortcut(event: NSEvent) -> Bool {
-        matchesMenuShortcut(self.menuPaste, event: event)
+    func matchesRemotePasteShortcut(event: NSEvent) -> Bool {
+        guard let characters = event.charactersIgnoringModifiers?.lowercased() else { return false }
+        let relevantFlags: NSEvent.ModifierFlags = [.command, .control, .option, .shift]
+        let eventFlags = event.modifierFlags.intersection(relevantFlags)
+        return characters == "v" && eventFlags == [.command, .shift]
     }
 
     private func matchesMenuShortcut(_ menuItem: NSMenuItem?, event: NSEvent) -> Bool {

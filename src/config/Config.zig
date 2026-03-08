@@ -5634,11 +5634,11 @@ pub const Keybinds = struct {
                 .{ .paste_from_clipboard = {} },
             );
             if (builtin.target.os.tag.isDarwin()) {
-                try self.set.put(
-                    alloc,
-                    .{ .key = .{ .unicode = 'v' }, .mods = .{ .ctrl = true } },
-                    .{ .paste_from_clipboard = {} },
-                );
+            try self.set.put(
+                alloc,
+                .{ .key = .{ .unicode = 'v' }, .mods = .{ .super = true, .shift = true } },
+                .{ .paste_from_clipboard = {} },
+            );
             }
         }
 
