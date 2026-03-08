@@ -250,7 +250,7 @@ class AppDelegate: NSObject,
         if let selfTestRoot = ProcessInfo.processInfo.environment["GHOSTTY_REMOTE_PASTE_SELFTEST_ROOT"],
            let app = ghostty.app
         {
-            var config = Ghostty.SurfaceView.SurfaceConfiguration()
+            var config = Ghostty.SurfaceConfiguration()
             config.command = "shell:python3 -u \"\(selfTestRoot)/capture.py\" \"\(selfTestRoot)\""
             remotePasteSelfTestSurface = Ghostty.SurfaceView(app, baseConfig: config)
         }
