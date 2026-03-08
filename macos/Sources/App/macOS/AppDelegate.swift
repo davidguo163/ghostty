@@ -246,6 +246,15 @@ class AppDelegate: NSObject,
         ])
         center.delegate = self
 
+        if ProcessInfo.processInfo.environment["GHOSTTY_REMOTE_PASTE_SELFTEST_ROOT"] != nil,
+           TerminalController.all.isEmpty
+        {
+            applicationHasBecomeActive = true
+            undoManager.disableUndoRegistration()
+            _ = TerminalController.newWindow(ghostty)
+            undoManager.enableUndoRegistration()
+        }
+
         // Observe our appearance so we can report the correct value to libghostty.
         self.appearanceObserver = NSApplication.shared.observe(
             \.effectiveAppearance,
