@@ -1454,6 +1454,7 @@ extension Ghostty {
                     let remoteText = try await self.resolveRemotePasteText(for: payload)
                     await MainActor.run {
                         self.insertRemotePasteText(remoteText)
+                        self.recordRemotePasteSelfTestInsertion(remoteText)
                     }
                 } catch {
                     AppDelegate.logger.error("remote paste bridge failed error=\(error.localizedDescription)")
@@ -1481,6 +1482,23 @@ extension Ghostty {
             guard let surfaceModel else { return }
             unmarkText()
             surfaceModel.sendText(text)
+        }
+
+        private func recordRemotePasteSelfTestInsertion(_ text: String) {
+            guard let root = ProcessInfo.processInfo.environment["GHOSTTY_REMOTE_PASTE_SELFTEST_ROOT"] else {
+                return
+            }
+
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return }
+
+            let url = URL(fileURLWithPath: root).appendingPathComponent("remote-paste-last.txt")
+            try? trimmed.write(to: url, atomically: true, encoding: .utf8)
+        }
+
+        private func clearRemotePasteSelfTestInsertionMarker(in root: String) {
+            let url = URL(fileURLWithPath: root).appendingPathComponent("remote-paste-last.txt")
+            try? FileManager.default.removeItem(at: url)
         }
 
         private func maybeStartRemotePasteSelfTest() {
@@ -1576,10 +1594,20 @@ extension Ghostty {
                 }
                 reportLines.append("TEXT_VALUE=\(textValue)")
 
-                let fileText = try await resolveRemotePasteText(
-                    for: .file(URL(fileURLWithPath: fileSource))
+                clearRemotePasteSelfTestInsertionMarker(in: root)
+                setSelfTestClipboardFile(URL(fileURLWithPath: fileSource))
+                guard handlePasteRequest() else {
+                    throw NSError(
+                        domain: "RemotePasteSelfTest",
+                        code: 4,
+                        userInfo: [NSLocalizedDescriptionKey: "file paste request was not handled"]
+                    )
+                }
+                _ = try await waitForRemotePasteSelfTestCapture(
+                    named: "remote-paste-last.txt",
+                    in: root
                 )
-                insertRemotePasteText(fileText + "\n")
+                insertRemotePasteText("\n")
                 let fileValue = try await waitForRemotePasteSelfTestCapture(
                     named: "file-capture.txt",
                     in: root
@@ -1626,8 +1654,20 @@ extension Ghostty {
                 reportLines.append("FILE_VALUE=\(fileValue)")
 
                 let imageData = try Data(contentsOf: URL(fileURLWithPath: imageSource))
-                let imageText = try await resolveRemotePasteText(for: .image(imageData))
-                insertRemotePasteText(imageText + "\n")
+                clearRemotePasteSelfTestInsertionMarker(in: root)
+                setSelfTestClipboardImage(imageData)
+                guard handlePasteRequest() else {
+                    throw NSError(
+                        domain: "RemotePasteSelfTest",
+                        code: 9,
+                        userInfo: [NSLocalizedDescriptionKey: "image paste request was not handled"]
+                    )
+                }
+                _ = try await waitForRemotePasteSelfTestCapture(
+                    named: "remote-paste-last.txt",
+                    in: root
+                )
+                insertRemotePasteText("\n")
                 let imageValue = try await waitForRemotePasteSelfTestCapture(
                     named: "image-capture.txt",
                     in: root
