@@ -1125,9 +1125,8 @@ input: RepeatableReadableIO = .{},
 /// TODO: This can't currently be set!
 link: RepeatableLink = .{},
 
-/// Enable URL matching. URLs are matched on hover with control (Linux) or
-/// command (macOS) pressed and open using the default system application for
-/// the linked URL.
+/// Enable URL matching. URLs are matched on hover and open using the default
+/// system application for the linked URL when clicked.
 ///
 /// The URL matcher is always lowest priority of any configured links (see
 /// `link`). If you want to customize URL matching, use `link` and disable this.
@@ -3307,7 +3306,7 @@ pub fn default(alloc_gpa: Allocator) Allocator.Error!Config {
     try result.link.links.append(alloc, .{
         .regex = url.regex,
         .action = .{ .open = {} },
-        .highlight = .{ .hover_mods = inputpkg.ctrlOrSuper(.{}) },
+        .highlight = .{ .hover = {} },
     });
 
     return result;
@@ -5644,17 +5643,27 @@ pub const Keybinds = struct {
                 .{ .copy_to_clipboard = {} },
                 .{ .performable = true },
             );
+            const open_url_mods: inputpkg.Mods = if (builtin.target.os.tag.isDarwin())
+                .{ .super = true, .shift = true }
+            else
+                .{ .ctrl = true, .alt = true };
+            try self.set.putFlags(
+                alloc,
+                .{ .key = .{ .unicode = 'o' }, .mods = open_url_mods },
+                .{ .open_url_under_cursor = {} },
+                .{ .performable = true },
+            );
             try self.set.put(
                 alloc,
                 .{ .key = .{ .unicode = 'v' }, .mods = mods },
                 .{ .paste_from_clipboard = {} },
             );
             if (builtin.target.os.tag.isDarwin()) {
-            try self.set.put(
-                alloc,
-                .{ .key = .{ .unicode = 'v' }, .mods = .{ .super = true, .shift = true } },
-                .{ .paste_from_clipboard = {} },
-            );
+                try self.set.put(
+                    alloc,
+                    .{ .key = .{ .unicode = 'v' }, .mods = .{ .super = true, .shift = true } },
+                    .{ .paste_from_clipboard = {} },
+                );
             }
         }
 
@@ -6430,6 +6439,42 @@ pub const Keybinds = struct {
         var set: Keybinds = .{};
         try set.parseCLI(alloc, "shift+a=copy_to_clipboard");
         try set.parseCLI(alloc, "shift+a=csi:hello");
+    }
+
+    test "default keybind includes open url under cursor" {
+        const testing = std.testing;
+        var arena = ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+
+        var keybinds: Keybinds = .{};
+        try keybinds.init(alloc);
+
+        const trigger = keybinds.set.getTrigger(.{ .open_url_under_cursor = {} }).?;
+        try testing.expect(trigger.key.unicode == 'o');
+        if (builtin.target.os.tag.isDarwin()) {
+            try testing.expect(trigger.mods.super);
+            try testing.expect(trigger.mods.shift);
+            try testing.expect(!trigger.mods.ctrl);
+            try testing.expect(!trigger.mods.alt);
+        } else {
+            try testing.expect(trigger.mods.ctrl);
+            try testing.expect(trigger.mods.alt);
+            try testing.expect(!trigger.mods.super);
+            try testing.expect(!trigger.mods.shift);
+        }
+    }
+
+    test "default url link is hover activated" {
+        const testing = std.testing;
+        var cfg = try Config.default(testing.allocator);
+        defer cfg.deinit();
+
+        try testing.expect(cfg.link.links.items.len > 0);
+        switch (cfg.link.links.items[0].highlight) {
+            .hover => {},
+            else => try testing.expect(false),
+        }
     }
 
     test "formatConfig single" {

@@ -143,6 +143,10 @@ extension Ghostty {
             label: "Ghostty.SurfaceView.RemotePasteSelfTest"
         )
         private static var remotePasteSelfTestStarted = false
+        private static let urlClickSelfTestQueue = DispatchQueue(
+            label: "Ghostty.SurfaceView.URLClickSelfTest"
+        )
+        private static var urlClickSelfTestStarted = false
 
         /// Returns the underlying C value for the surface. See "note" on surfaceModel.
         var surface: ghostty_surface_t? {
@@ -321,6 +325,7 @@ extension Ghostty {
             }
             self.surfaceModel = Ghostty.Surface(cSurface: surface)
             maybeStartRemotePasteSelfTest()
+            maybeStartURLClickSelfTest()
 
             // Setup our tracking area so we get mouse moved events
             updateTrackingAreas()
@@ -1519,6 +1524,24 @@ extension Ghostty {
             }
         }
 
+        private func maybeStartURLClickSelfTest() {
+            guard let _ = ProcessInfo.processInfo.environment["GHOSTTY_URL_CLICK_SELFTEST_ROOT"] else {
+                return
+            }
+
+            let shouldStart = Self.urlClickSelfTestQueue.sync { () -> Bool in
+                if Self.urlClickSelfTestStarted { return false }
+                Self.urlClickSelfTestStarted = true
+                return true
+            }
+            guard shouldStart else { return }
+
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.runURLClickSelfTest()
+            }
+        }
+
         @MainActor
         private func runRemotePasteSelfTest() async {
             let env = ProcessInfo.processInfo.environment
@@ -1779,6 +1802,175 @@ extension Ghostty {
 
         @MainActor
         private func finishRemotePasteSelfTest(
+            root: String,
+            lines: [String],
+            exitCode: Int32
+        ) {
+            let reportURL = URL(fileURLWithPath: root).appendingPathComponent("report.txt")
+            let report = lines.joined(separator: "\n") + "\n"
+            try? report.write(to: reportURL, atomically: true, encoding: .utf8)
+
+            NSApp.terminate(nil)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                exit(exitCode)
+            }
+        }
+
+        @MainActor
+        private func runURLClickSelfTest() async {
+            let env = ProcessInfo.processInfo.environment
+            guard let root = env["GHOSTTY_URL_CLICK_SELFTEST_ROOT"] else { return }
+            guard let targetURL = env["GHOSTTY_URL_CLICK_SELFTEST_URL"] else { return }
+            guard let token = env["GHOSTTY_URL_CLICK_SELFTEST_TOKEN"] else { return }
+
+            var reportLines = [
+                "ROOT=\(root)",
+                "URL=\(targetURL)",
+            ]
+
+            do {
+                try FileManager.default.createDirectory(
+                    at: URL(fileURLWithPath: root),
+                    withIntermediateDirectories: true,
+                    attributes: nil
+                )
+
+                try await waitForURLClickSelfTestReady()
+                insertRemotePasteText(targetURL + " ")
+                try await Task.sleep(nanoseconds: 750_000_000)
+
+                let point = try urlClickSelfTestPoint()
+                surfaceModel?.sendMousePos(.init(x: point.x, y: point.y))
+                let hovered = try await waitForURLClickSelfTestHover(
+                    expectedURL: targetURL,
+                    point: point
+                )
+                reportLines.append("HOVER_URL=\(hovered)")
+
+                surfaceModel?.sendMouseButton(.init(action: .press, button: .left))
+                surfaceModel?.sendMouseButton(.init(action: .release, button: .left))
+
+                let requestPath = try await waitForURLClickSelfTestCapture(
+                    named: "request.txt",
+                    in: root
+                )
+                guard requestPath.contains(token) else {
+                    throw NSError(
+                        domain: "URLClickSelfTest",
+                        code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: "unexpected request path: \(requestPath)"]
+                    )
+                }
+
+                reportLines.append("REQUEST_PATH=\(requestPath)")
+                reportLines.append("RESULT=PASS")
+                finishURLClickSelfTest(root: root, lines: reportLines, exitCode: 0)
+            } catch {
+                reportLines.append("RESULT=FAIL")
+                reportLines.append("ERROR=\(error.localizedDescription)")
+                finishURLClickSelfTest(root: root, lines: reportLines, exitCode: 1)
+            }
+        }
+
+        @MainActor
+        private func waitForURLClickSelfTestReady() async throws {
+            let deadline = Date().addingTimeInterval(10)
+            while Date() < deadline {
+                if surfaceModel != nil,
+                   cellSize.width > 0,
+                   cellSize.height > 0,
+                   window != nil
+                {
+                    return
+                }
+
+                try await Task.sleep(nanoseconds: 100_000_000)
+            }
+
+            throw NSError(
+                domain: "URLClickSelfTest",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "timed out waiting for surface readiness"]
+            )
+        }
+
+        @MainActor
+        private func urlClickSelfTestPoint() throws -> CGPoint {
+            guard cellSize.width > 0, cellSize.height > 0 else {
+                throw NSError(
+                    domain: "URLClickSelfTest",
+                    code: 3,
+                    userInfo: [NSLocalizedDescriptionKey: "cell size was not initialized"]
+                )
+            }
+
+            return CGPoint(
+                x: max(cellSize.width * 1.5, 6),
+                y: max(cellSize.height * 0.5, 6)
+            )
+        }
+
+        @MainActor
+        private func waitForURLClickSelfTestHover(
+            expectedURL: String,
+            point: CGPoint
+        ) async throws -> String {
+            let deadline = Date().addingTimeInterval(5)
+            while Date() < deadline {
+                surfaceModel?.sendMousePos(.init(x: point.x, y: point.y))
+                if hoverUrl == expectedURL {
+                    return expectedURL
+                }
+
+                try await Task.sleep(nanoseconds: 100_000_000)
+            }
+
+            throw NSError(
+                domain: "URLClickSelfTest",
+                code: 4,
+                userInfo: [NSLocalizedDescriptionKey: "timed out waiting for hovered URL"]
+            )
+        }
+
+        private func waitForURLClickSelfTestCapture(
+            named filename: String,
+            in root: String
+        ) async throws -> String {
+            let url = URL(fileURLWithPath: root).appendingPathComponent(filename)
+            let errorURL = URL(fileURLWithPath: root).appendingPathComponent("url-click-error.txt")
+            let deadline = Date().addingTimeInterval(10)
+
+            while Date() < deadline {
+                if FileManager.default.fileExists(atPath: errorURL.path) {
+                    let error = (try? String(contentsOf: errorURL, encoding: .utf8)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)) ?? "url click failed"
+                    throw NSError(
+                        domain: "URLClickSelfTest",
+                        code: 5,
+                        userInfo: [NSLocalizedDescriptionKey: error]
+                    )
+                }
+
+                if FileManager.default.fileExists(atPath: url.path) {
+                    let value = try String(contentsOf: url, encoding: .utf8)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !value.isEmpty {
+                        return value
+                    }
+                }
+
+                try await Task.sleep(nanoseconds: 100_000_000)
+            }
+
+            throw NSError(
+                domain: "URLClickSelfTest",
+                code: 6,
+                userInfo: [NSLocalizedDescriptionKey: "timed out waiting for \(filename)"]
+            )
+        }
+
+        @MainActor
+        private func finishURLClickSelfTest(
             root: String,
             lines: [String],
             exitCode: Int32

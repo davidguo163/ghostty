@@ -306,6 +306,9 @@ pub const Action = union(enum) {
     /// If there is a URL under the cursor, copy it to the default clipboard.
     copy_url_to_clipboard,
 
+    /// If there is a URL under the cursor, open it with the system opener.
+    open_url_under_cursor,
+
     /// Copy the terminal title to the clipboard. If the terminal title is not
     /// set or is empty this has no effect.
     copy_title_to_clipboard,
@@ -1063,6 +1066,7 @@ pub const Action = union(enum) {
             .reset,
             .copy_to_clipboard,
             .copy_url_to_clipboard,
+            .open_url_under_cursor,
             .copy_title_to_clipboard,
             .paste_from_clipboard,
             .paste_from_selection,

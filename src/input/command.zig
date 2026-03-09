@@ -132,6 +132,12 @@ fn actionCommands(action: Action.Key) []const Command {
             .description = "Copy the URL under the cursor to the clipboard.",
         }},
 
+        .open_url_under_cursor => comptime &.{.{
+            .action = .open_url_under_cursor,
+            .title = "Open URL Under Cursor",
+            .description = "Open the URL under the mouse cursor.",
+        }},
+
         .copy_title_to_clipboard => comptime &.{.{
             .action = .copy_title_to_clipboard,
             .title = "Copy Terminal Title to Clipboard",
@@ -524,4 +530,22 @@ test "command defaults" {
     const testing = std.testing;
     try testing.expect(defaults.len > 0);
     try testing.expectEqual(defaults.len, defaultsC.len);
+}
+
+test "command defaults include open url under cursor" {
+    const testing = std.testing;
+
+    var found = false;
+    for (defaults) |command| {
+        if (command.action == .{ .open_url_under_cursor = {} }) {
+            found = true;
+            try testing.expectEqualStrings("Open URL Under Cursor", command.title);
+            try testing.expectEqualStrings(
+                "Open the URL under the mouse cursor.",
+                command.description,
+            );
+        }
+    }
+
+    try testing.expect(found);
 }

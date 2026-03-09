@@ -97,8 +97,11 @@ class AppDelegate: NSObject,
         position: derivedConfig.quickTerminalPosition
     )
     private var remotePasteSelfTestController: TerminalController? = nil
+    private var urlClickSelfTestController: TerminalController? = nil
     private let isRemotePasteSelfTest =
         ProcessInfo.processInfo.environment["GHOSTTY_REMOTE_PASTE_SELFTEST_ROOT"] != nil
+    private let isURLClickSelfTest =
+        ProcessInfo.processInfo.environment["GHOSTTY_URL_CLICK_SELFTEST_ROOT"] != nil
 
     /// Manages updates
     let updaterController: SPUStandardUpdaterController
@@ -259,6 +262,15 @@ class AppDelegate: NSObject,
                 ghostty,
                 withBaseConfig: config
             )
+        } else if let selfTestRoot = ProcessInfo.processInfo.environment["GHOSTTY_URL_CLICK_SELFTEST_ROOT"] {
+            var config = Ghostty.SurfaceConfiguration()
+            config.workingDirectory = selfTestRoot
+            config.command = "/bin/cat"
+            config.waitAfterCommand = true
+            urlClickSelfTestController = TerminalController.newWindow(
+                ghostty,
+                withBaseConfig: config
+            )
         }
 
         // Observe our appearance so we can report the correct value to libghostty.
@@ -323,7 +335,11 @@ class AppDelegate: NSObject,
             // is possible to have other windows in a few scenarios:
             //   - if we're opening a URL since `application(_:openFile:)` is called before this.
             //   - if we're restoring from persisted state
-            if !isRemotePasteSelfTest && TerminalController.all.isEmpty && derivedConfig.initialWindow {
+            if !isRemotePasteSelfTest &&
+                !isURLClickSelfTest &&
+                TerminalController.all.isEmpty &&
+                derivedConfig.initialWindow
+            {
                 undoManager.disableUndoRegistration()
                 _ = TerminalController.newWindow(ghostty)
                 undoManager.enableUndoRegistration()
