@@ -265,7 +265,10 @@ class AppDelegate: NSObject,
         } else if let selfTestRoot = ProcessInfo.processInfo.environment["GHOSTTY_URL_CLICK_SELFTEST_ROOT"] {
             var config = Ghostty.SurfaceConfiguration()
             config.workingDirectory = selfTestRoot
-            config.command = "/bin/cat"
+            config.command = "/bin/sh"
+            if let selfTestURL = ProcessInfo.processInfo.environment["GHOSTTY_URL_CLICK_SELFTEST_URL"] {
+                config.initialInput = "printf '%s ' '\(selfTestURL)'\nprintf 'ready\n' > '\(selfTestRoot)/url-click-ready.txt'\nexec /bin/cat >/dev/null\n"
+            }
             config.waitAfterCommand = true
             urlClickSelfTestController = TerminalController.newWindow(
                 ghostty,

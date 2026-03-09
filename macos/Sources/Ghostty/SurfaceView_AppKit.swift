@@ -1836,17 +1836,28 @@ extension Ghostty {
                 )
 
                 try await waitForURLClickSelfTestReady()
-                insertRemotePasteText(targetURL + " ")
-                try await Task.sleep(nanoseconds: 750_000_000)
+                _ = try await waitForURLClickSelfTestCapture(
+                    named: "url-click-ready.txt",
+                    in: root
+                )
+                guard let screenDump = captureURLClickSelfTestScreen(in: root) else {
+                    throw NSError(
+                        domain: "URLClickSelfTest",
+                        code: 7,
+                        userInfo: [NSLocalizedDescriptionKey: "failed to capture screen dump"]
+                    )
+                }
+                reportLines.append("SCREEN_DUMP=\(screenDump.replacingOccurrences(of: "\n", with: "\\n"))")
 
-                let point = try urlClickSelfTestPoint()
-                surfaceModel?.sendMousePos(.init(x: point.x, y: point.y))
-                let hovered = try await waitForURLClickSelfTestHover(
+                let point = try urlClickSelfTestPoint(screenDump: screenDump, targetURL: targetURL)
+                let copiedURL = try await waitForURLClickSelfTestPrepared(
                     expectedURL: targetURL,
                     point: point
                 )
-                reportLines.append("HOVER_URL=\(hovered)")
+                reportLines.append("COPIED_URL=\(copiedURL)")
 
+                surfaceModel?.sendMousePos(.init(x: point.x, y: point.y))
+                try await Task.sleep(nanoseconds: 100_000_000)
                 surfaceModel?.sendMouseButton(.init(action: .press, button: .left))
                 surfaceModel?.sendMouseButton(.init(action: .release, button: .left))
 
@@ -1895,7 +1906,10 @@ extension Ghostty {
         }
 
         @MainActor
-        private func urlClickSelfTestPoint() throws -> CGPoint {
+        private func urlClickSelfTestPoint(
+            screenDump: String,
+            targetURL: String
+        ) throws -> CGPoint {
             guard cellSize.width > 0, cellSize.height > 0 else {
                 throw NSError(
                     domain: "URLClickSelfTest",
@@ -1904,22 +1918,44 @@ extension Ghostty {
                 )
             }
 
+            let lines = screenDump.split(separator: "\n", omittingEmptySubsequences: false)
+            guard let row = lines.firstIndex(where: { $0.contains(targetURL) }) else {
+                throw NSError(
+                    domain: "URLClickSelfTest",
+                    code: 8,
+                    userInfo: [NSLocalizedDescriptionKey: "target URL not found in screen dump"]
+                )
+            }
+
+            let line = String(lines[row])
+            guard let range = line.range(of: targetURL) else {
+                throw NSError(
+                    domain: "URLClickSelfTest",
+                    code: 8,
+                    userInfo: [NSLocalizedDescriptionKey: "target URL range not found in screen dump"]
+                )
+            }
+
+            let column = line.distance(from: line.startIndex, to: range.lowerBound)
             return CGPoint(
-                x: max(cellSize.width * 1.5, 6),
-                y: max(cellSize.height * 0.5, 6)
+                x: max((Double(column) + 0.5) * cellSize.width, 6),
+                y: max((Double(row) + 0.5) * cellSize.height, 6)
             )
         }
 
         @MainActor
-        private func waitForURLClickSelfTestHover(
+        private func waitForURLClickSelfTestPrepared(
             expectedURL: String,
             point: CGPoint
         ) async throws -> String {
             let deadline = Date().addingTimeInterval(5)
             while Date() < deadline {
                 surfaceModel?.sendMousePos(.init(x: point.x, y: point.y))
-                if hoverUrl == expectedURL {
-                    return expectedURL
+                if surfaceModel?.perform(action: "copy_url_to_clipboard") == true,
+                   let copied = NSPasteboard.general.string(forType: .string),
+                   copied == expectedURL
+                {
+                    return copied
                 }
 
                 try await Task.sleep(nanoseconds: 100_000_000)
@@ -1928,7 +1964,7 @@ extension Ghostty {
             throw NSError(
                 domain: "URLClickSelfTest",
                 code: 4,
-                userInfo: [NSLocalizedDescriptionKey: "timed out waiting for hovered URL"]
+                userInfo: [NSLocalizedDescriptionKey: "timed out waiting for URL under cursor"]
             )
         }
 
@@ -1967,6 +2003,26 @@ extension Ghostty {
                 code: 6,
                 userInfo: [NSLocalizedDescriptionKey: "timed out waiting for \(filename)"]
             )
+        }
+
+        @MainActor
+        private func captureURLClickSelfTestScreen(in root: String) -> String? {
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            guard surfaceModel?.perform(action: "write_screen_file:copy") == true,
+                  let path = pasteboard.string(forType: .string)
+            else {
+                return nil
+            }
+
+            let url = URL(fileURLWithPath: path)
+            guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+                return nil
+            }
+
+            let dumpURL = URL(fileURLWithPath: root).appendingPathComponent("screen.txt")
+            try? text.write(to: dumpURL, atomically: true, encoding: .utf8)
+            return text
         }
 
         @MainActor
