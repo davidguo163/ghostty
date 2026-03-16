@@ -1244,6 +1244,10 @@ extension Ghostty {
                 return false
             }
 
+            if isRemoteAwarePasteKeyEquivalent(event) {
+                return handlePasteRequest()
+            }
+
             // Get information about if this is a binding.
             let bindingFlags = surfaceModel.flatMap { surface in
                 var ghosttyEvent = event.ghosttyKeyEvent(GHOSTTY_ACTION_PRESS)
@@ -1350,6 +1354,14 @@ extension Ghostty {
 
             self.keyDown(with: finalEvent!)
             return true
+        }
+
+        private func isRemoteAwarePasteKeyEquivalent(_ event: NSEvent) -> Bool {
+            guard let appDelegate = NSApplication.shared.delegate as? AppDelegate else {
+                return false
+            }
+
+            return appDelegate.matchesRemotePasteShortcut(event: event)
         }
 
         override func flagsChanged(with event: NSEvent) {
@@ -1538,6 +1550,14 @@ extension Ghostty {
         }
 
         @IBAction func paste(_ sender: Any?) {
+            _ = handlePasteRequest()
+        }
+
+        @IBAction func pasteAsPlainText(_ sender: Any?) {
+            performNativePaste()
+        }
+
+        private func performNativePaste() {
             guard let surface = self.surface else { return }
             let action = "paste_from_clipboard"
             if !ghostty_surface_binding_action(surface, action, UInt(action.lengthOfBytes(using: .utf8))) {
@@ -1545,12 +1565,70 @@ extension Ghostty {
             }
         }
 
-        @IBAction func pasteAsPlainText(_ sender: Any?) {
-            guard let surface = self.surface else { return }
-            let action = "paste_from_clipboard"
-            if !ghostty_surface_binding_action(surface, action, UInt(action.lengthOfBytes(using: .utf8))) {
-                AppDelegate.logger.warning("action failed action=\(action)")
+        @discardableResult
+        private func handlePasteRequest() -> Bool {
+            let request: RemotePasteBridge.PasteRequest
+            do {
+                request = try RemotePasteBridge.preparePaste(for: .general)
+            } catch {
+                AppDelegate.logger.error("remote paste bridge failed error=\(error.localizedDescription)")
+                showRemotePasteAlert(error)
+                return true
             }
+
+            switch request {
+            case .native:
+                performNativePaste()
+            case let .remote(payload):
+                startRemotePaste(payload)
+            }
+
+            return true
+        }
+
+        private func startRemotePaste(_ payload: RemotePasteBridge.RemotePayload) {
+            Task { [weak self] in
+                guard let self else { return }
+                do {
+                    let remoteText = try await self.resolveRemotePasteText(for: payload)
+                    await MainActor.run {
+                        self.insertRemotePasteText(remoteText)
+                    }
+                } catch {
+                    AppDelegate.logger.error("remote paste bridge failed error=\(error.localizedDescription)")
+                    await MainActor.run { [weak self] in
+                        self?.showRemotePasteAlert(error)
+                    }
+                }
+            }
+        }
+
+        private func resolveRemotePasteText(
+            for payload: RemotePasteBridge.RemotePayload
+        ) async throws -> String {
+            let configuredHost = derivedConfig.macosRemotePasteHost
+            let remotePath = try await Task.detached(priority: .userInitiated) {
+                try RemotePasteBridge.uploadRemotePath(
+                    for: payload,
+                    configuredHost: configuredHost
+                )
+            }.value
+            return remotePath + " "
+        }
+
+        private func insertRemotePasteText(_ text: String) {
+            guard let surfaceModel else { return }
+            unmarkText()
+            surfaceModel.sendText(text)
+        }
+
+        private func showRemotePasteAlert(_ error: Swift.Error) {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "Remote Paste Failed"
+            alert.informativeText = error.localizedDescription
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
         }
 
         @IBAction func pasteSelection(_ sender: Any?) {
@@ -1733,6 +1811,7 @@ extension Ghostty {
             let backgroundColor: Color
             let backgroundOpacity: Double
             let backgroundBlur: Ghostty.Config.BackgroundBlur
+            let macosRemotePasteHost: String?
             let macosWindowShadow: Bool
             let windowTitleFontFamily: String?
             let windowAppearance: NSAppearance?
@@ -1742,6 +1821,7 @@ extension Ghostty {
                 self.backgroundColor = Color(NSColor.windowBackgroundColor)
                 self.backgroundOpacity = 1
                 self.backgroundBlur = .disabled
+                self.macosRemotePasteHost = nil
                 self.macosWindowShadow = true
                 self.windowTitleFontFamily = nil
                 self.windowAppearance = nil
@@ -1752,6 +1832,7 @@ extension Ghostty {
                 self.backgroundColor = config.backgroundColor
                 self.backgroundOpacity = config.backgroundOpacity
                 self.backgroundBlur = config.backgroundBlur
+                self.macosRemotePasteHost = config.macosRemotePasteHost
                 self.macosWindowShadow = config.macosWindowShadow
                 self.windowTitleFontFamily = config.windowTitleFontFamily
                 self.windowAppearance = .init(ghosttyConfig: config)

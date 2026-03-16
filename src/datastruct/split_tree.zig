@@ -568,6 +568,21 @@ pub fn SplitTree(comptime V: type) type {
             };
         }
 
+        /// Append another tree at the root in the given direction.
+        ///
+        /// This is a small convenience wrapper around `split` that makes it
+        /// explicit when callers want to graft a whole subtree onto the
+        /// existing root.
+        pub fn appendTree(
+            self: *const Self,
+            gpa: Allocator,
+            direction: Split.Direction,
+            ratio: f16,
+            other: *const Self,
+        ) Allocator.Error!Self {
+            return self.split(gpa, .root, direction, ratio, other);
+        }
+
         /// Remove a node from the tree.
         pub fn remove(
             self: *Self,
@@ -1894,6 +1909,52 @@ test "SplitTree: split twice, remove intermediary" {
         var t = try split2.remove(alloc, @enumFromInt(i));
         t.deinit();
     }
+}
+
+test "SplitTree: appendTree keeps donor subtree leaves" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var a: TestTree.View = .{ .label = "A" };
+    var tree_a: TestTree = try .init(alloc, &a);
+    defer tree_a.deinit();
+    var b: TestTree.View = .{ .label = "B" };
+    var tree_b: TestTree = try .init(alloc, &b);
+    defer tree_b.deinit();
+    var c: TestTree.View = .{ .label = "C" };
+    var tree_c: TestTree = try .init(alloc, &c);
+    defer tree_c.deinit();
+    var d: TestTree.View = .{ .label = "D" };
+    var tree_d: TestTree = try .init(alloc, &d);
+    defer tree_d.deinit();
+
+    var destination = try tree_a.split(alloc, .root, .right, 0.5, &tree_b);
+    defer destination.deinit();
+    var donor = try tree_c.split(alloc, .root, .down, 0.5, &tree_d);
+    defer donor.deinit();
+
+    var merged = try destination.appendTree(alloc, .right, 0.5, &donor);
+    defer merged.deinit();
+
+    var it = merged.iterator();
+    var seen_a = false;
+    var seen_b = false;
+    var seen_c = false;
+    var seen_d = false;
+    var count: usize = 0;
+    while (it.next()) |entry| {
+        count += 1;
+        if (std.mem.eql(u8, entry.view.label, "A")) seen_a = true;
+        if (std.mem.eql(u8, entry.view.label, "B")) seen_b = true;
+        if (std.mem.eql(u8, entry.view.label, "C")) seen_c = true;
+        if (std.mem.eql(u8, entry.view.label, "D")) seen_d = true;
+    }
+
+    try testing.expectEqual(@as(usize, 4), count);
+    try testing.expect(seen_a);
+    try testing.expect(seen_b);
+    try testing.expect(seen_c);
+    try testing.expect(seen_d);
 }
 
 test "SplitTree: spatial goto" {

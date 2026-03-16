@@ -165,10 +165,22 @@ fn actionCommands(action: Action.Key) []const Command {
             .description = "Copy the URL under the cursor to the clipboard.",
         }},
 
+        .open_url_under_cursor => comptime &.{.{
+            .action = .open_url_under_cursor,
+            .title = "Open URL Under Cursor",
+            .description = "Open the URL under the mouse cursor.",
+        }},
+
         .copy_title_to_clipboard => comptime &.{.{
             .action = .copy_title_to_clipboard,
             .title = "Copy Terminal Title to Clipboard",
             .description = "Copy the terminal title to the clipboard. If the terminal title is not set this has no effect.",
+        }},
+
+        .collect_all_panes_to_first_tab => comptime &.{.{
+            .action = .collect_all_panes_to_first_tab,
+            .title = "Collect All Panes Into First Tab",
+            .description = "Move all panes into the first tab and close the remaining tabs.",
         }},
 
         .paste_from_clipboard => comptime &.{.{

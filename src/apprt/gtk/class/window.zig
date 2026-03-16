@@ -601,6 +601,60 @@ pub const Window = extern struct {
         return tab_view.reorderPage(page, desired_pos) != 0;
     }
 
+    pub fn collectAllPanesIntoFirstTab(self: *Self, surface: *Surface) bool {
+        _ = surface;
+
+        const tab_view = self.private().tab_view;
+        const total = tab_view.getNPages();
+        if (total <= 1) return false;
+
+        const first_page = tab_view.getNthPage(0);
+        const first_child = first_page.getChild();
+        const first_tab = gobject.ext.cast(Tab, first_child) orelse return false;
+        const first_tree_ptr = first_tab.getSurfaceTree() orelse return false;
+
+        const alloc = Application.default().allocator();
+        var merged = first_tree_ptr.clone(alloc) catch |err| {
+            log.warn("failed to clone first tab tree error={}", .{err});
+            return false;
+        };
+        defer merged.deinit();
+
+        var changed = false;
+        for (1..@as(usize, @intCast(total))) |i| {
+            const page = tab_view.getNthPage(@intCast(i));
+            const child = page.getChild();
+            const tab = gobject.ext.cast(Tab, child) orelse continue;
+            const donor_tree = tab.getSurfaceTree() orelse continue;
+            if (donor_tree.isEmpty()) continue;
+
+            const next = merged.appendTree(alloc, .right, 0.5, donor_tree) catch |err| {
+                log.warn("failed to merge donor tab tree error={}", .{err});
+                return false;
+            };
+            merged.deinit();
+            merged = next;
+            changed = true;
+        }
+
+        if (!changed) return false;
+
+        first_tab.getSplitTree().setTree(&merged);
+
+        var idx: usize = @intCast(total);
+        while (idx > 1) {
+            idx -= 1;
+            const page = tab_view.getNthPage(@intCast(idx));
+            const child = page.getChild();
+            const tab = gobject.ext.cast(Tab, child) orelse continue;
+            tab.getSplitTree().setTree(null);
+        }
+
+        tab_view.setSelectedPage(first_page);
+        if (first_tab.getActiveSurface()) |active| active.grabFocus();
+        return true;
+    }
+
     pub fn toggleTabOverview(self: *Self) void {
         const priv = self.private();
         const tab_overview = priv.tab_overview;

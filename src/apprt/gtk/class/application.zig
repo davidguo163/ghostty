@@ -670,6 +670,7 @@ pub const Application = extern struct {
             .close_window => return Action.closeWindow(target),
 
             .copy_title_to_clipboard => return Action.copyTitleToClipboard(target),
+            .collect_all_panes_to_first_tab => return Action.collectAllPanesIntoFirstTab(target),
 
             .config_change => try Action.configChange(
                 self,
@@ -1905,6 +1906,24 @@ const Action = struct {
             .app => false,
             .surface => |v| v.rt_surface.gobj().copyTitleToClipboard(),
         };
+    }
+
+    pub fn collectAllPanesIntoFirstTab(target: apprt.Target) bool {
+        switch (target) {
+            .app => return false,
+            .surface => |core| {
+                const surface = core.rt_surface.surface;
+                const window = ext.getAncestor(
+                    Window,
+                    surface.as(gtk.Widget),
+                ) orelse {
+                    log.warn("surface is not in a window, ignoring collect_all_panes_to_first_tab", .{});
+                    return false;
+                };
+
+                return window.collectAllPanesIntoFirstTab(surface);
+            },
+        }
     }
 
     pub fn configChange(

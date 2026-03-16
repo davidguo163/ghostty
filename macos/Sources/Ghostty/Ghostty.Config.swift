@@ -270,6 +270,17 @@ extension Ghostty {
             return v
         }
 
+        var macosRemotePasteHost: String? {
+            guard let config = self.config else { return nil }
+            var v: UnsafePointer<Int8>?
+            let key = "macos-remote-paste-host"
+            guard ghostty_config_get(config, &v, key, UInt(key.lengthOfBytes(using: .utf8))) else {
+                return nil
+            }
+            guard let ptr = v else { return nil }
+            return String(cString: ptr)
+        }
+
         /// Returns the fullscreen mode if fullscreen is enabled, or nil if disabled.
         /// This parses the `fullscreen` enum config which supports both
         /// native and non-native fullscreen modes.

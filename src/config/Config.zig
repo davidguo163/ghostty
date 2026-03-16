@@ -1414,9 +1414,8 @@ scrollbar: Scrollbar = .system,
 /// TODO: This can't currently be set!
 link: RepeatableLink = .{},
 
-/// Enable URL matching. URLs are matched on hover with control (Linux) or
-/// command (macOS) pressed and open using the default system application for
-/// the linked URL.
+/// Enable URL matching. URLs are matched on hover and open using the default
+/// system application for the linked URL.
 ///
 /// The URL matcher is always lowest priority of any configured links (see
 /// `link`). If you want to customize URL matching, use `link` and disable this.
@@ -3257,6 +3256,18 @@ keybind: Keybinds = .{},
 /// platforms.
 @"macos-dock-drop-behavior": MacOSDockDropBehavior = .@"new-tab",
 
+/// The SSH host or alias used by the macOS remote paste bridge when
+/// `Cmd+Shift+V` uploads a clipboard image or file to a remote machine.
+///
+/// This value should be something that `ssh` and `scp` can resolve, such as
+/// a host alias in your SSH config. This setting is only used by the macOS
+/// remote paste bridge and has no effect on other platforms.
+///
+/// The environment variable `GHOSTTY_REMOTE_PASTE_HOST` overrides this value.
+///
+/// If this is unset, the macOS remote paste bridge falls back to `dev`.
+@"macos-remote-paste-host": ?[:0]const u8 = null,
+
 /// macOS doesn't have a distinct "alt" key and instead has the "option"
 /// key which behaves slightly differently. On macOS by default, the
 /// option key plus a character will sometimes produce a Unicode character.
@@ -3836,7 +3847,7 @@ pub fn default(alloc_gpa: Allocator) Allocator.Error!Config {
     try result.link.links.append(alloc, .{
         .regex = url.regex,
         .action = .{ .open = {} },
-        .highlight = .{ .hover_mods = inputpkg.ctrlOrSuper(.{}) },
+        .highlight = .hover,
     });
 
     return result;
@@ -6452,6 +6463,16 @@ pub const Keybinds = struct {
                 alloc,
                 .{ .key = .{ .unicode = 'c' }, .mods = mods },
                 .{ .copy_to_clipboard = .mixed },
+                .{ .performable = true },
+            );
+            const open_url_mods: inputpkg.Mods = if (builtin.target.os.tag.isDarwin())
+                .{ .super = true, .shift = true }
+            else
+                .{ .ctrl = true, .alt = true };
+            try self.set.putFlags(
+                alloc,
+                .{ .key = .{ .unicode = 'o' }, .mods = open_url_mods },
+                .{ .open_url_under_cursor = {} },
                 .{ .performable = true },
             );
             try self.set.putFlags(
@@ -10851,5 +10872,50 @@ test "compatibility: window new-window" {
             MacOSDockDropBehavior.@"new-window",
             cfg.@"macos-dock-drop-behavior",
         );
+    }
+}
+
+test "default keybind includes open url under cursor" {
+    const testing = std.testing;
+    var arena = ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var keybinds: Keybinds = .{};
+    try keybinds.init(alloc);
+
+    var iter = keybinds.set.bindings.iterator();
+    const trigger = while (iter.next()) |entry| {
+        switch (entry.value_ptr.*) {
+            .leaf => |leaf| if (leaf.action == .open_url_under_cursor) {
+                break entry.key_ptr.*;
+            },
+            else => {},
+        }
+    } else return error.NotFound;
+
+    try testing.expect(trigger.key.unicode == 'o');
+    if (builtin.target.os.tag.isDarwin()) {
+        try testing.expect(trigger.mods.super);
+        try testing.expect(trigger.mods.shift);
+        try testing.expect(!trigger.mods.ctrl);
+        try testing.expect(!trigger.mods.alt);
+    } else {
+        try testing.expect(trigger.mods.ctrl);
+        try testing.expect(trigger.mods.alt);
+        try testing.expect(!trigger.mods.super);
+        try testing.expect(!trigger.mods.shift);
+    }
+}
+
+test "default url link is hover activated" {
+    const testing = std.testing;
+    var cfg = try Config.default(testing.allocator);
+    defer cfg.deinit();
+
+    try testing.expect(cfg.link.links.items.len > 0);
+    switch (cfg.link.links.items[0].highlight) {
+        .hover => {},
+        else => return error.TestExpectedEqual,
     }
 }

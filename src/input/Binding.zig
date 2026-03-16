@@ -358,6 +358,13 @@ pub const Action = union(enum) {
     /// If there is a URL under the cursor, copy it to the default clipboard.
     copy_url_to_clipboard,
 
+    /// If there is a URL under the cursor, open it with the system opener.
+    open_url_under_cursor,
+
+    /// Move all panes from every tab into the first tab and close the
+    /// remaining tabs.
+    collect_all_panes_to_first_tab,
+
     /// Copy the terminal title to the clipboard. If the terminal title is not
     /// set or is empty this has no effect.
     copy_title_to_clipboard,
@@ -1325,6 +1332,8 @@ pub const Action = union(enum) {
             .reset,
             .copy_to_clipboard,
             .copy_url_to_clipboard,
+            .open_url_under_cursor,
+            .collect_all_panes_to_first_tab,
             .copy_title_to_clipboard,
             .paste_from_clipboard,
             .paste_from_selection,
@@ -3287,6 +3296,14 @@ test "parse: action no parameters" {
         try parseSingle("a=ignore"),
     );
     try testing.expectError(Error.InvalidFormat, parseSingle("a=ignore:A"));
+}
+
+test "parse: collect all panes action is surface scoped" {
+    const testing = std.testing;
+
+    const binding = try parseSingle("a=collect_all_panes_to_first_tab");
+    try testing.expect(binding.action == .collect_all_panes_to_first_tab);
+    try testing.expect(binding.action.scope() == .surface);
 }
 
 test "parse: action with string" {

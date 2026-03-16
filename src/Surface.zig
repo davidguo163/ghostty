@@ -4558,6 +4558,54 @@ fn osc8URI(self: *Surface, pin: terminal.Pin) ?[]const u8 {
     return entry.uri.slice(page.memory);
 }
 
+fn linkUrlAtCursor(self: *Surface) !?[:0]const u8 {
+    const pos = try self.rt_surface.getCursorPos();
+
+    self.renderer_state.mutex.lock();
+    defer self.renderer_state.mutex.unlock();
+
+    const screen: *terminal.Screen = self.renderer_state.terminal.screens.active;
+    const mouse_pin: terminal.Pin = mouse_pin: {
+        const point = self.posToViewport(pos.x, pos.y);
+        const pin = screen.pages.pin(.{ .viewport = point }) orelse {
+            log.warn("failed to get pin for cursor point", .{});
+            return null;
+        };
+        break :mouse_pin pin;
+    };
+
+    if (mouse_pin.rowAndCell().cell.hyperlink) {
+        const uri = self.osc8URI(mouse_pin) orelse {
+            log.warn("failed to get URI for OSC8 hyperlink", .{});
+            return null;
+        };
+        return try self.alloc.dupeZ(u8, uri);
+    }
+
+    if (try self.linkAtPin(mouse_pin, null)) |link_info| {
+        const url_text = switch (link_info.action) {
+            .open => (self.io.terminal.screens.active.selectionString(self.alloc, .{
+                .sel = link_info.selection,
+                .trim = self.config.clipboard_trim_trailing_spaces,
+            })) catch |err| {
+                log.err("error reading url string err={}", .{err});
+                return null;
+            },
+
+            ._open_osc8 => url_text: {
+                const uri = self.osc8URI(link_info.selection.start()) orelse {
+                    log.warn("failed to get URI for OSC8 hyperlink", .{});
+                    return null;
+                };
+                break :url_text try self.alloc.dupeZ(u8, uri);
+            },
+        };
+        return url_text;
+    }
+
+    return null;
+}
+
 pub fn mousePressureCallback(
     self: *Surface,
     stage: input.MousePressureStage,
@@ -5359,48 +5407,26 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
         },
 
         .copy_url_to_clipboard => {
-            // If the mouse isn't over a link, nothing we can do.
-            if (!self.mouse.over_link) return false;
-            const pos = try self.rt_surface.getCursorPos();
+            const url_text = (try self.linkUrlAtCursor()) orelse return false;
+            defer self.alloc.free(url_text);
 
-            self.renderer_state.mutex.lock();
-            defer self.renderer_state.mutex.unlock();
-            if (try self.linkAtPos(pos)) |link_info| {
-                const url_text = switch (link_info.action) {
-                    .open => url_text: {
-                        // For regex links, get the text from selection
-                        break :url_text (self.io.terminal.screens.active.selectionString(self.alloc, .{
-                            .sel = link_info.selection,
-                            .trim = self.config.clipboard_trim_trailing_spaces,
-                        })) catch |err| {
-                            log.err("error reading url string err={}", .{err});
-                            return false;
-                        };
-                    },
+            self.rt_surface.setClipboard(.standard, &.{.{
+                .mime = "text/plain",
+                .data = url_text,
+            }}, false) catch |err| {
+                log.err("error copying url to clipboard err={}", .{err});
+                return false;
+            };
 
-                    ._open_osc8 => url_text: {
-                        // For OSC8 links, get the URI directly from hyperlink data
-                        const uri = self.osc8URI(link_info.selection.start()) orelse {
-                            log.warn("failed to get URI for OSC8 hyperlink", .{});
-                            return false;
-                        };
-                        break :url_text try self.alloc.dupeZ(u8, uri);
-                    },
-                };
-                defer self.alloc.free(url_text);
+            return true;
+        },
 
-                self.rt_surface.setClipboard(.standard, &.{.{
-                    .mime = "text/plain",
-                    .data = url_text,
-                }}, false) catch |err| {
-                    log.err("error copying url to clipboard err={}", .{err});
-                    return false;
-                };
+        .open_url_under_cursor => {
+            const url_text = (try self.linkUrlAtCursor()) orelse return false;
+            defer self.alloc.free(url_text);
 
-                return true;
-            }
-
-            return false;
+            try self.openUrl(.{ .kind = .unknown, .url = url_text });
+            return true;
         },
 
         .copy_title_to_clipboard => return try self.rt_app.performAction(
@@ -5639,6 +5665,12 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             .{ .surface = self },
             .move_tab,
             .{ .amount = position },
+        ),
+
+        .collect_all_panes_to_first_tab => return try self.rt_app.performAction(
+            .{ .surface = self },
+            .collect_all_panes_to_first_tab,
+            {},
         ),
 
         .new_split => |direction| return try self.rt_app.performAction(

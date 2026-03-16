@@ -102,6 +102,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             object: nil)
         center.addObserver(
             self,
+            selector: #selector(onCollectAllPanesIntoFirstTab),
+            name: .ghosttyCollectAllPanesIntoFirstTab,
+            object: nil)
+        center.addObserver(
+            self,
             selector: #selector(onCloseTabsOnTheRight),
             name: .ghosttyCloseTabsOnTheRight,
             object: nil)
@@ -723,6 +728,63 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         }
     }
 
+    private func collectAllPanesIntoFirstTabImmediately() {
+        guard let window = window else { return }
+        guard let tabGroup = window.tabGroup else { return }
+
+        let tabWindows = Array(tabGroup.windows)
+        guard tabWindows.count > 1 else { return }
+        guard let firstWindow = tabWindows.first,
+              let firstController = firstWindow.windowController as? TerminalController else {
+            return
+        }
+
+        var destinationTree = firstController.surfaceTree
+        guard let initialAnchor = firstController.focusedSurface ?? destinationTree.first(where: { _ in true }) else {
+            return
+        }
+        let preservedFocus = firstController.focusedSurface ?? initialAnchor
+        var anchor = initialAnchor
+        var donorControllers: [TerminalController] = []
+
+        for candidateWindow in tabWindows where candidateWindow != firstWindow {
+            guard let donor = candidateWindow.windowController as? TerminalController else { continue }
+            donorControllers.append(donor)
+
+            let donorSurfaces = Array(donor.surfaceTree)
+            for donorSurface in donorSurfaces {
+                do {
+                    destinationTree = try destinationTree.inserting(
+                        view: donorSurface,
+                        at: anchor,
+                        direction: .right
+                    )
+                } catch {
+                    Ghostty.logger.warning("failed to collect pane into first tab: \(error)")
+                    return
+                }
+                anchor = donorSurface
+            }
+        }
+
+        guard !donorControllers.isEmpty else { return }
+
+        firstController.replaceSurfaceTree(
+            destinationTree,
+            moveFocusTo: preservedFocus,
+            moveFocusFrom: firstController.focusedSurface,
+            undoAction: "Collect All Panes Into First Tab"
+        )
+
+        for donor in donorControllers {
+            donor.surfaceTree = .init()
+        }
+
+        DispatchQueue.main.async {
+            firstWindow.makeKeyAndOrderFront(nil)
+        }
+    }
+
     private func closeTabsOnTheRightImmediately() {
         guard let window = window else { return }
         guard let tabGroup = window.tabGroup else { return }
@@ -1311,6 +1373,14 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         }
     }
 
+    @IBAction func collectAllPanesIntoFirstTab(_ sender: Any?) {
+        guard let surface = focusedSurface?.surface else { return }
+        guard let window, let tabGroup = window.tabGroup else { return }
+        let terminalControllers = tabGroup.windows.compactMap { $0.windowController as? TerminalController }
+        guard terminalControllers.count > 1 else { return }
+        ghostty.collectAllPanesIntoFirstTab(surface: surface)
+    }
+
     @IBAction func returnToDefaultSize(_ sender: Any?) {
         guard let window, let defaultSize else { return }
         defaultSize.apply(to: window)
@@ -1512,6 +1582,12 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         closeOtherTabs(self)
     }
 
+    @objc private func onCollectAllPanesIntoFirstTab(notification: SwiftUI.Notification) {
+        guard let target = notification.object as? Ghostty.SurfaceView else { return }
+        guard surfaceTree.contains(target) else { return }
+        collectAllPanesIntoFirstTabImmediately()
+    }
+
     @objc private func onCloseTabsOnTheRight(notification: SwiftUI.Notification) {
         guard let target = notification.object as? Ghostty.SurfaceView else { return }
         guard surfaceTree.contains(target) else { return }
@@ -1580,6 +1656,12 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 extension TerminalController {
     override func validateMenuItem(_ item: NSMenuItem) -> Bool {
         switch item.action {
+        case #selector(collectAllPanesIntoFirstTab):
+            guard focusedSurface?.surface != nil else { return false }
+            guard let window, let tabGroup = window.tabGroup else { return false }
+            let terminalControllers = tabGroup.windows.compactMap { $0.windowController as? TerminalController }
+            return terminalControllers.count > 1
+
         case #selector(closeTabsOnTheRight):
             guard let window, let tabGroup = window.tabGroup else { return false }
             guard let currentIndex = tabGroup.windows.firstIndex(of: window) else { return false }

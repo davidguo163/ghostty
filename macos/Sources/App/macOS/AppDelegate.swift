@@ -145,6 +145,9 @@ class AppDelegate: NSObject,
     /// Tracks the windows that we hid for toggleVisibility.
     private(set) var hiddenState: ToggleVisibilityState?
 
+    /// One-shot app-owned selftests that need to run after activation.
+    private lazy var collectPanesShortcutSelftestRunner = CollectPanesShortcutSelftest.Runner(appDelegate: self)
+
     /// The observer for the app appearance.
     private var appearanceObserver: NSKeyValueObservation?
 
@@ -362,6 +365,8 @@ class AppDelegate: NSObject,
                 undoManager.enableUndoRegistration()
             }
         }
+
+        collectPanesShortcutSelftestRunner.startIfNeeded()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -1285,6 +1290,16 @@ extension AppDelegate {
 
         parentMenu.performActionForItem(at: index)
         return true
+    }
+
+    func matchesRemotePasteShortcut(event: NSEvent) -> Bool {
+        guard let characters = event.charactersIgnoringModifiers?.lowercased() else {
+            return false
+        }
+
+        let relevantFlags: NSEvent.ModifierFlags = [.command, .control, .option, .shift]
+        let eventFlags = event.modifierFlags.intersection(relevantFlags)
+        return characters == "v" && eventFlags == [.command, .shift]
     }
 
     /// Hashable key for a menu shortcut match, normalized for quick lookup.

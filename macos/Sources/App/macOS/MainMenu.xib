@@ -489,6 +489,12 @@
                                     </items>
                                 </menu>
                             </menuItem>
+                            <menuItem title="Collect All Panes Into First Tab" id="XfX-lf-rPY">
+                                <modifierMask key="keyEquivalentModifierMask"/>
+                                <connections>
+                                    <action selector="collectAllPanesIntoFirstTab:" target="-1" id="6Bq-TR-zDF"/>
+                                </connections>
+                            </menuItem>
                             <menuItem isSeparatorItem="YES" id="dgt-Tx-d4e"/>
                             <menuItem title="Return To Default Size" id="Gbx-Vi-OGC" userLabel="Return To Default Size">
                                 <modifierMask key="keyEquivalentModifierMask"/>

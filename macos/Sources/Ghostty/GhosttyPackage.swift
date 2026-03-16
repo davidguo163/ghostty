@@ -348,6 +348,9 @@ extension Notification.Name {
     /// Close other tabs
     static let ghosttyCloseOtherTabs = Notification.Name("com.mitchellh.ghostty.closeOtherTabs")
 
+    /// Move all panes from every tab into the first tab and close the rest.
+    static let ghosttyCollectAllPanesIntoFirstTab = Notification.Name("com.mitchellh.ghostty.collectAllPanesIntoFirstTab")
+
     /// Close tabs to the right of the focused tab
     static let ghosttyCloseTabsOnTheRight = Notification.Name("com.mitchellh.ghostty.closeTabsOnTheRight")
 

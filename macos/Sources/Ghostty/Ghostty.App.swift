@@ -225,6 +225,13 @@ extension Ghostty {
             }
         }
 
+        func collectAllPanesIntoFirstTab(surface: ghostty_surface_t) {
+            let action = "collect_all_panes_to_first_tab"
+            if !ghostty_surface_binding_action(surface, action, UInt(action.lengthOfBytes(using: .utf8))) {
+                logger.warning("action failed action=\(action)")
+            }
+        }
+
         enum FontSizeModification {
             case increase(Int)
             case decrease(Int)
@@ -499,6 +506,9 @@ extension Ghostty {
 
             case GHOSTTY_ACTION_CLOSE_TAB:
                 closeTab(app, target: target, mode: action.action.close_tab_mode)
+
+            case GHOSTTY_ACTION_COLLECT_ALL_PANES_TO_FIRST_TAB:
+                collectAllPanesIntoFirstTab(app, target: target)
 
             case GHOSTTY_ACTION_CLOSE_WINDOW:
                 closeWindow(app, target: target)
@@ -930,6 +940,25 @@ extension Ghostty {
                 default:
                     assertionFailure()
                 }
+
+            default:
+                assertionFailure()
+            }
+        }
+
+        private static func collectAllPanesIntoFirstTab(_ app: ghostty_app_t, target: ghostty_target_s) {
+            switch target.tag {
+            case GHOSTTY_TARGET_APP:
+                Ghostty.logger.warning("collect panes does nothing with an app target")
+                return
+
+            case GHOSTTY_TARGET_SURFACE:
+                guard let surface = target.target.surface else { return }
+                guard let surfaceView = self.surfaceView(from: surface) else { return }
+                NotificationCenter.default.post(
+                    name: .ghosttyCollectAllPanesIntoFirstTab,
+                    object: surfaceView
+                )
 
             default:
                 assertionFailure()
