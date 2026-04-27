@@ -207,11 +207,17 @@ extension Ghostty {
         /// Event monitor (see individual events for why)
         private var eventMonitor: Any?
 
+        /// The command this surface was originally spawned with, so that
+        /// macOS Restorable State can re-spawn the same command on next launch.
+        /// Nil means the surface used the default shell.
+        private(set) var restoreCommand: String?
+
         // We need to support being a first responder so that we can get input events
         override var acceptsFirstResponder: Bool { return true }
 
         init(_ app: ghostty_app_t, baseConfig: SurfaceConfiguration? = nil, uuid: UUID? = nil) {
             self.markedText = NSMutableAttributedString()
+            self.restoreCommand = baseConfig?.command
 
             // Our initial config always is our application wide config.
             if let appDelegate = NSApplication.shared.delegate as? AppDelegate {
@@ -1853,6 +1859,7 @@ extension Ghostty {
             case uuid
             case title
             case isUserSetTitle
+            case command
         }
 
         required convenience init(from decoder: Decoder) throws {
@@ -1869,6 +1876,11 @@ extension Ghostty {
             config.workingDirectory = try container.decode(String?.self, forKey: .pwd)
             let savedTitle = try container.decodeIfPresent(String.self, forKey: .title)
             let isUserSetTitle = try container.decodeIfPresent(Bool.self, forKey: .isUserSetTitle) ?? false
+
+            // Replay the original spawn command (e.g. ~/ss.sh prod1) so that
+            // each pane reconnects to the same remote it was bound to before
+            // restart, instead of falling back to a local shell.
+            config.command = try container.decodeIfPresent(String.self, forKey: .command)
 
             // Inject the previously captured title (typically the tmux session
             // name when the user's tmux is configured with `set-titles-string
@@ -1899,6 +1911,7 @@ extension Ghostty {
             try container.encode(id.uuidString, forKey: .uuid)
             try container.encode(title, forKey: .title)
             try container.encode(titleFromTerminal != nil, forKey: .isUserSetTitle)
+            try container.encodeIfPresent(restoreCommand, forKey: .command)
         }
     }
 }

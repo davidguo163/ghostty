@@ -697,17 +697,26 @@ extension Ghostty {
                     return try initialInput.withCString { cInput in
                         config.initial_input = cInput
 
+                        // Always expose a stable per-surface id to spawned
+                        // processes so user wrapper scripts can persist
+                        // per-pane state (e.g. last remote host) keyed by it.
+                        // The id is preserved across macOS Restorable State
+                        // restarts, so the same uuid will be visible to the
+                        // re-spawned command.
+                        var mergedEnv = environmentVariables
+                        mergedEnv["GHOSTTY_PANE_ID"] = view.id.uuidString
+
                         // Convert dictionary to arrays for easier processing
-                        let keys = Array(environmentVariables.keys)
-                        let values = Array(environmentVariables.values)
+                        let keys = Array(mergedEnv.keys)
+                        let values = Array(mergedEnv.values)
 
                         // Create C strings for all keys and values
                         return try keys.withCStrings { keyCStrings in
                             return try values.withCStrings { valueCStrings in
                                 // Create array of ghostty_env_var_s
                                 var envVars = [ghostty_env_var_s]()
-                                envVars.reserveCapacity(environmentVariables.count)
-                                for i in 0..<environmentVariables.count {
+                                envVars.reserveCapacity(mergedEnv.count)
+                                for i in 0..<mergedEnv.count {
                                     envVars.append(ghostty_env_var_s(
                                         key: keyCStrings[i],
                                         value: valueCStrings[i]
@@ -716,7 +725,7 @@ extension Ghostty {
 
                                 return try envVars.withUnsafeMutableBufferPointer { buffer in
                                     config.env_vars = buffer.baseAddress
-                                    config.env_var_count = environmentVariables.count
+                                    config.env_var_count = mergedEnv.count
                                     return try body(&config)
                                 }
                             }

@@ -66,12 +66,10 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
          withSurfaceTree tree: SplitTree<Ghostty.SurfaceView>? = nil,
          parent: NSWindow? = nil
     ) {
-        // The window we manage is not restorable if we've specified a command
-        // to execute. We do this because the restored window is meaningless at the
-        // time of writing this: it'd just restore to a shell in the same directory
-        // as the script. We may want to revisit this behavior when we have scrollback
-        // restoration.
-        self.restorable = (base?.command ?? "") == ""
+        // We persist the spawn command per-surface in SurfaceView's
+        // CodingKeys, so a window that started with a command can still be
+        // restored meaningfully — the same command is replayed.
+        self.restorable = true
 
         // Setup our initial derived config based on the current app config
         self.derivedConfig = DerivedConfig(ghostty.config)
