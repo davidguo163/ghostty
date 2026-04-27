@@ -1870,6 +1870,17 @@ extension Ghostty {
             let savedTitle = try container.decodeIfPresent(String.self, forKey: .title)
             let isUserSetTitle = try container.decodeIfPresent(Bool.self, forKey: .isUserSetTitle) ?? false
 
+            // Inject the previously captured title (typically the tmux session
+            // name when the user's tmux is configured with `set-titles-string
+            // "#S"`) as an env var so the user's launch command can re-attach
+            // to the same remote tmux session. The user's `command` script
+            // (e.g. ~/ss.sh) reads $GHOSTTY_RESTORE_TMUX_SESSION and runs
+            // `tmux a -t $GHOSTTY_RESTORE_TMUX_SESSION` when set, otherwise
+            // starts a fresh session.
+            if let savedTitle, !savedTitle.isEmpty {
+                config.environmentVariables["GHOSTTY_RESTORE_TMUX_SESSION"] = savedTitle
+            }
+
             self.init(app, baseConfig: config, uuid: uuid)
 
             // Restore the saved title after initialization
