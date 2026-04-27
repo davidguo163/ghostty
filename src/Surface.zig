@@ -253,6 +253,13 @@ const Mouse = struct {
     /// The last x/y in the cursor position for links. We use this to
     /// only process link hover events when the mouse actually moves cells.
     link_point: ?terminal.point.Coordinate = null,
+
+    /// Set when a left-button press was swallowed because the cursor was
+    /// over a link while the terminal app captures mouse events (e.g.
+    /// tmux with `mouse on`). The matching release will open the link
+    /// (if still hovered) and is also swallowed so the terminal app
+    /// never sees an unpaired release.
+    url_press_swallowed: bool = false,
 };
 
 /// Keyboard state for the surface.
@@ -3932,9 +3939,28 @@ pub fn mouseButtonCallback(
             try self.cursorPosCallback(pos, null);
             return true;
         }
+
+        // If we're pressing on a link while the terminal app captures
+        // mouse events (e.g. tmux with `mouse on`), swallow the press.
+        // The matching release below will open the link via processLinks
+        // (or silently drop, if the user dragged off). Without this the
+        // app would receive a press without a matching release because
+        // the release-side link handler swallows the event.
+        if (self.mouse.over_link and self.isMouseReporting()) {
+            self.mouse.url_press_swallowed = true;
+            return true;
+        }
     }
 
     if (button == .left and action == .release) {
+        // Capture and clear the press-swallow flag for this release. If
+        // the matching press was swallowed for a URL click but no link
+        // ends up being opened below (user dragged off the link), we
+        // silently drop the release at the end of this block to avoid
+        // sending an unpaired release event to the terminal app.
+        const url_press_swallowed = self.mouse.url_press_swallowed;
+        self.mouse.url_press_swallowed = false;
+
         // Stop selection scrolling when releasing the left mouse button
         // but only when selection scrolling is active.
         if (self.selection_scroll_active) {
@@ -3980,6 +4006,11 @@ pub fn mouseButtonCallback(
         } else |err| {
             log.warn("error processing prompt click err={}", .{err});
         }
+
+        // If the matching press was swallowed for a URL click but the
+        // release happened off the link, drop the release silently so
+        // the terminal app doesn't see an unpaired release event.
+        if (url_press_swallowed) return true;
     }
 
     // Report mouse events if enabled
@@ -4753,17 +4784,17 @@ pub fn cursorPosCallback(
     // We refresh links when
     // 1. we were previously over a link
     // OR
-    // 2. the cursor position has changed (either we have no previous state, or the state has
-    //    changed)
-    // AND
-    // 1. mouse reporting is off
-    // OR
-    // 2. mouse reporting is on and we are not reporting shift to the terminal
-    if ((over_link or
+    // 2. the cursor position has changed (either we have no previous
+    //    state, or the state has changed)
+    //
+    // Note: this fires even when the terminal app has mouse reporting
+    // on (e.g. tmux with `mouse on`). Tracking over_link in that mode
+    // is what lets the click handler in mouseButtonCallback open URLs
+    // before forwarding the event. Without this, plain-clicks inside
+    // tmux would always be reported to tmux and never open the link.
+    if (over_link or
         self.mouse.link_point == null or
-        (self.mouse.link_point != null and !self.mouse.link_point.?.eql(pos_vp))) and
-        (self.io.terminal.flags.mouse_event == .none or
-            (self.mouse.mods.shift and !self.mouseShiftCapture(false))))
+        (self.mouse.link_point != null and !self.mouse.link_point.?.eql(pos_vp)))
     {
         // If we were previously over a link, we always update. We do this so that if the text
         // changed underneath us, even if the mouse didn't move, we update the URL hints and state
