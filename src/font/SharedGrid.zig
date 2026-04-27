@@ -194,6 +194,25 @@ pub fn getIndex(
     return value;
 }
 
+/// Like getIndex but consults a caller-owned Cache first to avoid
+/// acquiring the SharedGrid rwlock on cache hits. Misses fall through
+/// to the locked path and the result (including negative matches) is
+/// stored in the local cache.
+pub fn getIndexCached(
+    self: *SharedGrid,
+    cache: *Cache,
+    alloc: Allocator,
+    cp: u32,
+    style: Style,
+    p: ?Presentation,
+) !?Collection.Index {
+    const key: CodepointKey = .{ .style = style, .codepoint = cp, .presentation = p };
+    if (cache.codepoints.get(key)) |v| return v;
+    const v = try self.getIndex(alloc, cp, style, p);
+    try cache.codepoints.put(alloc, key, v);
+    return v;
+}
+
 /// Returns true if the given font index has the codepoint and presentation.
 pub fn hasCodepoint(
     self: *SharedGrid,
@@ -213,6 +232,32 @@ pub fn hasCodepoint(
 pub const Render = struct {
     glyph: Glyph,
     presentation: Presentation,
+};
+
+/// A per-thread cache for codepoint and glyph lookups against a
+/// SharedGrid. Each rendering pipeline (e.g. one per surface) owns
+/// its own Cache and invokes the *Cached variants below, which only
+/// acquire the SharedGrid rwlock on miss. With many surfaces this
+/// avoids the rwlock cache-line bouncing that otherwise dominates
+/// CPU under high pane counts.
+///
+/// The cache is NOT thread-safe; it must be accessed by a single
+/// thread. Cached values are valid as long as the underlying
+/// SharedGrid instance is unchanged. Callers must invoke reset()
+/// when their *SharedGrid is replaced (e.g. on font reload).
+pub const Cache = struct {
+    codepoints: std.AutoHashMapUnmanaged(CodepointKey, ?Collection.Index) = .{},
+    glyphs: std.HashMapUnmanaged(GlyphKey, Render, GlyphKey.Context, 80) = .{},
+
+    pub fn deinit(self: *Cache, alloc: Allocator) void {
+        self.codepoints.deinit(alloc);
+        self.glyphs.deinit(alloc);
+    }
+
+    pub fn reset(self: *Cache, alloc: Allocator) void {
+        self.codepoints.clearAndFree(alloc);
+        self.glyphs.clearAndFree(alloc);
+    }
 };
 
 /// Render a codepoint. This uses the first font index that has the codepoint
@@ -244,6 +289,29 @@ pub fn renderCodepoint(
 
     // Render
     return try self.renderGlyph(alloc, index, glyph_index, opts);
+}
+
+/// Like renderCodepoint but routes the underlying getIndex and
+/// renderGlyph lookups through a caller-owned Cache.
+pub fn renderCodepointCached(
+    self: *SharedGrid,
+    cache: *Cache,
+    alloc: Allocator,
+    cp: u32,
+    style: Style,
+    p: ?Presentation,
+    opts: RenderOptions,
+) !?Render {
+    const index = try self.getIndexCached(cache, alloc, cp, style, p) orelse return null;
+
+    const glyph_index = glyph_index: {
+        self.lock.lockShared();
+        defer self.lock.unlockShared();
+        const face = try self.resolver.collection.getFace(index);
+        break :glyph_index face.glyphIndex(cp) orelse return null;
+    };
+
+    return try self.renderGlyphCached(cache, alloc, index, glyph_index, opts);
 }
 
 pub const renderGlyph_tw = tripwire.module(enum {
@@ -339,13 +407,31 @@ pub fn renderGlyph(
     return gop.value_ptr.*;
 }
 
-const CodepointKey = struct {
+/// Like renderGlyph but consults a caller-owned Cache first. Misses
+/// fall through to renderGlyph (which takes the SharedGrid lock and
+/// possibly rasterizes), and the result is stored in the local cache.
+pub fn renderGlyphCached(
+    self: *SharedGrid,
+    cache: *Cache,
+    alloc: Allocator,
+    index: Collection.Index,
+    glyph_index: u32,
+    opts: RenderOptions,
+) !Render {
+    const key: GlyphKey = .{ .index = index, .glyph = glyph_index, .opts = opts };
+    if (cache.glyphs.get(key)) |v| return v;
+    const v = try self.renderGlyph(alloc, index, glyph_index, opts);
+    try cache.glyphs.put(alloc, key, v);
+    return v;
+}
+
+pub const CodepointKey = struct {
     style: Style,
     codepoint: u32,
     presentation: ?Presentation,
 };
 
-const GlyphKey = struct {
+pub const GlyphKey = struct {
     index: Collection.Index,
     glyph: u32,
     opts: RenderOptions,

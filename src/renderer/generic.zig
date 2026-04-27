@@ -173,6 +173,12 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         font_shaper: font.Shaper,
         font_shaper_cache: font.ShaperCache,
 
+        /// Per-renderer glyph cache. Keeps codepoint and glyph lookups
+        /// off the shared rwlock on the hot path. See
+        /// `font.SharedGrid.Cache`. This is owned by this renderer
+        /// thread and must not be touched concurrently.
+        glyph_cache: font.SharedGrid.Cache = .{},
+
         /// The images that we may render.
         images: ImageState = .empty,
 
@@ -815,6 +821,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
             self.font_shaper.deinit();
             self.font_shaper_cache.deinit(self.alloc);
+            self.glyph_cache.deinit(self.alloc);
 
             self.config.deinit();
 
@@ -1093,6 +1100,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             const font_shaper_cache = font.ShaperCache.init();
             self.font_shaper_cache.deinit(self.alloc);
             self.font_shaper_cache = font_shaper_cache;
+
+            // Reset our glyph cache too. Indices and Render values were
+            // tied to the previous SharedGrid and are no longer valid.
+            self.glyph_cache.reset(self.alloc);
 
             // Update cell size.
             self.size.cell = .{
@@ -1859,6 +1870,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             const font_shaper_cache = font.ShaperCache.init();
             self.font_shaper_cache.deinit(self.alloc);
             self.font_shaper_cache = font_shaper_cache;
+
+            // Glyph cache is keyed by font index + glyph index, both of
+            // which can change meaning when the font configuration
+            // changes, so reset it as well.
+            self.glyph_cache.reset(self.alloc);
 
             // Set our new minimum contrast
             self.uniforms.min_contrast = config.min_contrast;
@@ -2658,6 +2674,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             // Iterator of runs for shaping.
             var run_iter_opts: font.shape.RunOptions = .{
                 .grid = self.font_grid,
+                .cache = &self.glyph_cache,
                 .cells = cells_slice,
                 .selection = if (selection) |s| s else null,
 
@@ -3073,7 +3090,8 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 .curly => .underline_curly,
             };
 
-            const render = try self.font_grid.renderGlyph(
+            const render = try self.font_grid.renderGlyphCached(
+                &self.glyph_cache,
                 self.alloc,
                 font.sprite_index,
                 @intFromEnum(sprite),
@@ -3104,7 +3122,8 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             color: terminal.color.RGB,
             alpha: u8,
         ) !void {
-            const render = try self.font_grid.renderGlyph(
+            const render = try self.font_grid.renderGlyphCached(
+                &self.glyph_cache,
                 self.alloc,
                 font.sprite_index,
                 @intFromEnum(font.Sprite.overline),
@@ -3135,7 +3154,8 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             color: terminal.color.RGB,
             alpha: u8,
         ) !void {
-            const render = try self.font_grid.renderGlyph(
+            const render = try self.font_grid.renderGlyphCached(
+                &self.glyph_cache,
                 self.alloc,
                 font.sprite_index,
                 @intFromEnum(font.Sprite.strikethrough),
@@ -3174,7 +3194,8 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             const cp = cell.codepoint();
 
             // Render
-            const render = try self.font_grid.renderGlyph(
+            const render = try self.font_grid.renderGlyphCached(
+                &self.glyph_cache,
                 self.alloc,
                 shaper_run.font_index,
                 shaper_cell.glyph_index,
@@ -3262,7 +3283,8 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                         .lock => unreachable,
                     };
 
-                    break :render self.font_grid.renderGlyph(
+                    break :render self.font_grid.renderGlyphCached(
+                        &self.glyph_cache,
                         self.alloc,
                         font.sprite_index,
                         @intFromEnum(sprite),
@@ -3276,7 +3298,8 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     };
                 },
 
-                .lock => self.font_grid.renderCodepoint(
+                .lock => self.font_grid.renderCodepointCached(
+                    &self.glyph_cache,
                     self.alloc,
                     0xF023, // lock symbol
                     .regular,
@@ -3317,7 +3340,8 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             screen_fg: terminal.color.RGB,
         ) !void {
             // Render the glyph for our preedit text
-            const render_ = self.font_grid.renderCodepoint(
+            const render_ = self.font_grid.renderCodepointCached(
+                &self.glyph_cache,
                 self.alloc,
                 @intCast(cp.codepoint),
                 .regular,

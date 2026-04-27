@@ -228,7 +228,7 @@ pub const RunIterator = struct {
 
                 // Otherwise we need a fallback character. Prefer the
                 // official replacement character.
-                if (try self.opts.grid.getIndex(
+                if (try self.getIndex(
                     alloc,
                     0xFFFD, // replacement char
                     font_style,
@@ -236,7 +236,7 @@ pub const RunIterator = struct {
                 )) |idx| break :font_info .{ .idx = idx, .fallback = 0xFFFD };
 
                 // Fallback to space
-                if (try self.opts.grid.getIndex(
+                if (try self.getIndex(
                     alloc,
                     ' ',
                     font_style,
@@ -312,6 +312,22 @@ pub const RunIterator = struct {
     /// Find a font index that supports the grapheme for the given cell,
     /// or null if no such font exists.
     ///
+    /// Look up a codepoint's font index, routing through the optional
+    /// per-renderer cache to avoid the SharedGrid rwlock on hits.
+    inline fn getIndex(
+        self: *RunIterator,
+        alloc: Allocator,
+        cp: u32,
+        style: font.Style,
+        p: ?font.Presentation,
+    ) !?font.Collection.Index {
+        const grid = self.opts.grid;
+        return if (self.opts.cache) |c|
+            grid.getIndexCached(c, alloc, cp, style, p)
+        else
+            grid.getIndex(alloc, cp, style, p);
+    }
+
     /// This is used to find a font that supports the entire grapheme.
     /// We look for fonts that support each individual codepoint and then
     /// find the common font amongst all candidates.
@@ -327,7 +343,7 @@ pub const RunIterator = struct {
             cell.codepoint() == 0 or
             cell.codepoint() == terminal.kitty.graphics.unicode.placeholder)
         {
-            return try self.opts.grid.getIndex(
+            return try self.getIndex(
                 alloc,
                 ' ',
                 style,
@@ -337,7 +353,7 @@ pub const RunIterator = struct {
 
         // Get the font index for the primary codepoint.
         const primary_cp: u32 = cell.codepoint();
-        const primary = try self.opts.grid.getIndex(
+        const primary = try self.getIndex(
             alloc,
             primary_cp,
             style,
@@ -368,7 +384,7 @@ pub const RunIterator = struct {
             // to support the base presentation, since it is common for emoji
             // fonts to support the base emoji with emoji presentation but not
             // certain ZWJ-combined characters like the male and female signs.
-            const idx = try self.opts.grid.getIndex(
+            const idx = try self.getIndex(
                 alloc,
                 cp,
                 style,

@@ -72,6 +72,11 @@ pub const RunOptions = struct {
     /// cached values may be updated during shaping.
     grid: *SharedGrid,
 
+    /// Optional per-renderer glyph cache. When provided, RunIterator
+    /// routes its codepoint lookups through SharedGrid.getIndexCached
+    /// to avoid taking the shared rwlock on every cell.
+    cache: ?*SharedGrid.Cache = null,
+
     /// The cells for the row to shape.
     cells: std.MultiArrayList(terminal.RenderState.Cell).Slice = .empty,
 
