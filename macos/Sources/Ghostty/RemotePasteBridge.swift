@@ -1,7 +1,5 @@
 import AppKit
 import Foundation
-import ImageIO
-import UniformTypeIdentifiers
 
 enum RemotePasteBridge {
     enum PasteRequest: Sendable {
@@ -182,29 +180,46 @@ enum RemotePasteBridge {
         return Ghostty.Shell.escape(remotePath)
     }
 
+    // macOS ImageIO does not ship a WebP encoder (only a decoder), so we shell
+    // out to the libwebp `cwebp` binary. Falls back to nil when cwebp is not
+    // installed, which makes the caller keep the original PNG payload.
     private static func encodeWebP(_ source: Data, quality: Double) -> Data? {
-        guard let imageSource = CGImageSourceCreateWithData(source as CFData, nil),
-              let cgImage = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) else {
-            return nil
+        guard let cwebpPath = locateCWebP() else { return nil }
+
+        let tmpDir = FileManager.default.temporaryDirectory
+        let uuid = UUID().uuidString
+        let inputURL = tmpDir.appendingPathComponent("ghostty-webp-in-\(uuid).png")
+        let outputURL = tmpDir.appendingPathComponent("ghostty-webp-out-\(uuid).webp")
+        defer {
+            try? FileManager.default.removeItem(at: inputURL)
+            try? FileManager.default.removeItem(at: outputURL)
         }
 
-        let webpType = UTType.webP.identifier as CFString
-        let output = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(
-            output as CFMutableData,
-            webpType,
-            1,
-            nil
-        ) else {
+        do {
+            try source.write(to: inputURL, options: .atomic)
+            let qualityArg = String(Int((quality * 100).rounded()))
+            _ = try runProcess(
+                cwebpPath,
+                ["-q", qualityArg, "-quiet", inputURL.path, "-o", outputURL.path],
+                failurePrefix: "cwebp encode failed"
+            )
+            return try Data(contentsOf: outputURL)
+        } catch {
             return nil
         }
+    }
 
-        let properties: [CFString: Any] = [
-            kCGImageDestinationLossyCompressionQuality: quality,
+    private static func locateCWebP() -> String? {
+        let candidates = [
+            "/opt/homebrew/bin/cwebp",
+            "/usr/local/bin/cwebp",
+            "/opt/local/bin/cwebp",
         ]
-        CGImageDestinationAddImage(destination, cgImage, properties as CFDictionary)
-        guard CGImageDestinationFinalize(destination) else { return nil }
-        return output as Data
+        let fm = FileManager.default
+        for path in candidates where fm.isExecutableFile(atPath: path) {
+            return path
+        }
+        return nil
     }
 
     private static func ensureRemoteDirectory(_ remoteDir: String, host: String) throws {
