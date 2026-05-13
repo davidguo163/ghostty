@@ -134,11 +134,12 @@ enum RemotePasteBridge {
         let remoteDir = "\(remoteHome)/\(remoteTmuxRootSuffix)/paste-files"
         let remotePath = "\(remoteDir)/\(timestamp)-\(basename)"
 
-        try ensureRemoteDirectory(remoteDir, host: host)
-        try runProcess(
-            "/usr/bin/scp",
-            ["-q", fileURL.path, "\(host):\(remotePath)"],
-            failurePrefix: "scp file upload failed"
+        let fileData = try Data(contentsOf: fileURL)
+        try uploadDataOneShot(
+            payload: fileData,
+            host: host,
+            remoteDir: remoteDir,
+            remotePath: remotePath
         )
 
         return Ghostty.Shell.escape(remotePath)
@@ -164,20 +165,45 @@ enum RemotePasteBridge {
         }
 
         let remotePath = "\(remoteDir)/paste-\(timestamp).\(ext)"
-        let localURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ghostty-remote-paste-\(UUID().uuidString).\(ext)")
-
-        try payload.write(to: localURL, options: .atomic)
-        defer { try? FileManager.default.removeItem(at: localURL) }
-
-        try ensureRemoteDirectory(remoteDir, host: host)
-        try runProcess(
-            "/usr/bin/scp",
-            ["-q", localURL.path, "\(host):\(remotePath)"],
-            failurePrefix: "scp image upload failed"
+        try uploadDataOneShot(
+            payload: payload,
+            host: host,
+            remoteDir: remoteDir,
+            remotePath: remotePath
         )
 
         return Ghostty.Shell.escape(remotePath)
+    }
+
+    // Single-SSH-session upload: mkdir + write + atomic rename in one remote
+    // shell. Cuts paste latency in half on slow-fork hosts because the legacy
+    // path opened two SSH sessions (mkdir then scp), and each session fork on
+    // the remote dominated the wall time.
+    private static func uploadDataOneShot(
+        payload: Data,
+        host: String,
+        remoteDir: String,
+        remotePath: String
+    ) throws {
+        let quotedDir = posixSingleQuote(remoteDir)
+        let quotedTmp = posixSingleQuote(remotePath + ".part")
+        let quotedFinal = posixSingleQuote(remotePath)
+        let script = "set -e; mkdir -p \(quotedDir); cat > \(quotedTmp); mv \(quotedTmp) \(quotedFinal)"
+
+        var arguments = sshOptions
+        arguments.append(host)
+        arguments.append(script)
+
+        _ = try runProcess(
+            "/usr/bin/ssh",
+            arguments,
+            failurePrefix: "remote paste upload failed",
+            stdinData: payload
+        )
+    }
+
+    private static func posixSingleQuote(_ value: String) -> String {
+        return "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     // macOS ImageIO does not ship a WebP encoder (only a decoder), so we shell
@@ -220,17 +246,6 @@ enum RemotePasteBridge {
             return path
         }
         return nil
-    }
-
-    private static func ensureRemoteDirectory(_ remoteDir: String, host: String) throws {
-        var arguments = sshOptions
-        arguments.append(host)
-        arguments.append(contentsOf: ["mkdir", "-p", remoteDir])
-        try runProcess(
-            "/usr/bin/ssh",
-            arguments,
-            failurePrefix: "remote directory bootstrap failed"
-        )
     }
 
     private static func resolvedRemoteHome(host: String) throws -> String {
@@ -276,7 +291,8 @@ enum RemotePasteBridge {
         _ executable: String,
         _ arguments: [String],
         failurePrefix: String,
-        captureStdout: Bool = false
+        captureStdout: Bool = false,
+        stdinData: Data? = nil
     ) throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
@@ -286,12 +302,33 @@ enum RemotePasteBridge {
         let stderrPipe = Pipe()
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
+
+        // Optional stdin: must be writen on a background queue so the parent
+        // doesn't deadlock when the payload exceeds the pipe buffer (~64KB).
+        let stdinPipe: Pipe?
+        if stdinData != nil {
+            let pipe = Pipe()
+            process.standardInput = pipe
+            stdinPipe = pipe
+        } else {
+            stdinPipe = nil
+        }
+
         let finished = DispatchSemaphore(value: 0)
         process.terminationHandler = { _ in
             finished.signal()
         }
 
         try process.run()
+
+        if let data = stdinData, let pipe = stdinPipe {
+            DispatchQueue.global(qos: .userInitiated).async {
+                let handle = pipe.fileHandleForWriting
+                handle.write(data)
+                try? handle.close()
+            }
+        }
+
         let waitResult = finished.wait(
             timeout: .now() + .milliseconds(Int(commandTimeoutSeconds * 1000))
         )
