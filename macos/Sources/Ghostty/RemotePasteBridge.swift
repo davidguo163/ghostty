@@ -1,5 +1,7 @@
 import AppKit
 import Foundation
+import ImageIO
+import UniformTypeIdentifiers
 
 enum RemotePasteBridge {
     enum PasteRequest: Sendable {
@@ -32,6 +34,7 @@ enum RemotePasteBridge {
     private static let defaultRemoteHost = "dev"
     private static let remoteTmuxRootSuffix = ".tmux"
     private static let commandTimeoutSeconds = 15.0
+    private static let webpQuality: Double = 0.85
     private static let sshOptions = [
         "-o", "BatchMode=yes",
         "-o", "ConnectTimeout=5",
@@ -151,11 +154,22 @@ enum RemotePasteBridge {
         let remoteHome = try resolvedRemoteHome(host: host)
         let timestamp = timestampString()
         let remoteDir = "\(remoteHome)/\(remoteTmuxRootSuffix)/paste-images"
-        let remotePath = "\(remoteDir)/paste-\(timestamp).png"
-        let localURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ghostty-remote-paste-\(UUID().uuidString).png")
 
-        try imageData.write(to: localURL, options: .atomic)
+        let payload: Data
+        let ext: String
+        if let webp = encodeWebP(imageData, quality: webpQuality), webp.count < imageData.count {
+            payload = webp
+            ext = "webp"
+        } else {
+            payload = imageData
+            ext = "png"
+        }
+
+        let remotePath = "\(remoteDir)/paste-\(timestamp).\(ext)"
+        let localURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ghostty-remote-paste-\(UUID().uuidString).\(ext)")
+
+        try payload.write(to: localURL, options: .atomic)
         defer { try? FileManager.default.removeItem(at: localURL) }
 
         try ensureRemoteDirectory(remoteDir, host: host)
@@ -166,6 +180,31 @@ enum RemotePasteBridge {
         )
 
         return Ghostty.Shell.escape(remotePath)
+    }
+
+    private static func encodeWebP(_ source: Data, quality: Double) -> Data? {
+        guard let imageSource = CGImageSourceCreateWithData(source as CFData, nil),
+              let cgImage = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) else {
+            return nil
+        }
+
+        let webpType = UTType.webP.identifier as CFString
+        let output = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            output as CFMutableData,
+            webpType,
+            1,
+            nil
+        ) else {
+            return nil
+        }
+
+        let properties: [CFString: Any] = [
+            kCGImageDestinationLossyCompressionQuality: quality,
+        ]
+        CGImageDestinationAddImage(destination, cgImage, properties as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return output as Data
     }
 
     private static func ensureRemoteDirectory(_ remoteDir: String, host: String) throws {
