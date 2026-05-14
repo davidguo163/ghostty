@@ -41,15 +41,28 @@ enum RemotePasteBridge {
         "-o", "ServerAliveInterval=5",
         "-o", "ServerAliveCountMax=1",
     ]
-    private static let stateQueue = DispatchQueue(label: "Ghostty.RemotePasteBridge.State")
-    private static var cachedRemoteHomes: [String: String] = [:]
+    // Timing instrumentation, gated on env var so it's free in production.
+    // Set GHOSTTY_PASTE_TIMING=1 in launchctl/Info.plist or via `open -a` env
+    // injection to enable, then watch with:
+    //     log stream --predicate 'subsystem == "ghostty.paste"'
+    private static let timingEnabled = ProcessInfo.processInfo
+        .environment["GHOSTTY_PASTE_TIMING"] != nil
+    private static func tlog(_ label: String) {
+        guard timingEnabled else { return }
+        NSLog("[paste-timing] %.6f %@", Date().timeIntervalSince1970, label)
+    }
 
     static func preparePaste(for pasteboard: NSPasteboard) throws -> PasteRequest {
+        tlog("preparePaste start")
+        defer { tlog("preparePaste end") }
+
         if let fileURL = singleFileURL(from: pasteboard) {
             return .remote(.file(fileURL))
         }
 
+        tlog("preparePaste before clipboardImageData")
         if let imageData = clipboardImageData(from: pasteboard) {
+            tlog("preparePaste after clipboardImageData (\(imageData.count) bytes)")
             return .remote(.image(imageData))
         }
 
@@ -64,6 +77,9 @@ enum RemotePasteBridge {
         for payload: RemotePayload,
         configuredHost: String?
     ) throws -> String {
+        tlog("uploadRemotePath start")
+        defer { tlog("uploadRemotePath end") }
+
         switch payload {
         case let .file(fileURL):
             return try uploadFile(fileURL, configuredHost: configuredHost)
@@ -128,18 +144,17 @@ enum RemotePasteBridge {
         configuredHost: String?
     ) throws -> String {
         let host = resolvedRemoteHost(configuredHost: configuredHost)
-        let remoteHome = try resolvedRemoteHome(host: host)
         let timestamp = timestampString()
         let basename = sanitizeFilename(fileURL.lastPathComponent.isEmpty ? "attachment" : fileURL.lastPathComponent)
-        let remoteDir = "\(remoteHome)/\(remoteTmuxRootSuffix)/paste-files"
-        let remotePath = "\(remoteDir)/\(timestamp)-\(basename)"
+        let subdir = "\(remoteTmuxRootSuffix)/paste-files"
+        let filename = "\(timestamp)-\(basename)"
 
         let fileData = try Data(contentsOf: fileURL)
-        try uploadDataOneShot(
+        let remotePath = try uploadDataOneShot(
             payload: fileData,
             host: host,
-            remoteDir: remoteDir,
-            remotePath: remotePath
+            subdir: subdir,
+            filename: filename
         )
 
         return Ghostty.Shell.escape(remotePath)
@@ -149,67 +164,87 @@ enum RemotePasteBridge {
         _ imageData: Data,
         configuredHost: String?
     ) throws -> String {
+        tlog("uploadImageData start (\(imageData.count) bytes in)")
         let host = resolvedRemoteHost(configuredHost: configuredHost)
-        let remoteHome = try resolvedRemoteHome(host: host)
+        tlog("uploadImageData: resolved host=\(host)")
         let timestamp = timestampString()
-        let remoteDir = "\(remoteHome)/\(remoteTmuxRootSuffix)/paste-images"
+        let subdir = "\(remoteTmuxRootSuffix)/paste-images"
 
+        tlog("uploadImageData: encodeWebP start")
         let payload: Data
         let ext: String
         if let webp = encodeWebP(imageData, quality: webpQuality), webp.count < imageData.count {
+            tlog("uploadImageData: encodeWebP done (\(webp.count) bytes)")
             payload = webp
             ext = "webp"
         } else {
+            tlog("uploadImageData: encodeWebP fallback to PNG")
             payload = imageData
             ext = "png"
         }
 
-        let remotePath = "\(remoteDir)/paste-\(timestamp).\(ext)"
-        try uploadDataOneShot(
+        let filename = "paste-\(timestamp).\(ext)"
+        tlog("uploadImageData: uploadDataOneShot start")
+        let remotePath = try uploadDataOneShot(
             payload: payload,
             host: host,
-            remoteDir: remoteDir,
-            remotePath: remotePath
+            subdir: subdir,
+            filename: filename
         )
+        tlog("uploadImageData: uploadDataOneShot done")
 
         return Ghostty.Shell.escape(remotePath)
     }
 
-    // Single-SSH-session upload: mkdir + write + atomic rename in one remote
-    // shell. Cuts paste latency in half on slow-fork hosts because the legacy
-    // path opened two SSH sessions (mkdir then scp), and each session fork on
-    // the remote dominated the wall time.
+    // Single-SSH-session upload: the remote shell expands $HOME itself, so we
+    // skip the previous `ssh HOST printenv HOME` round-trip (which cost
+    // ~600ms on a slow-fork host). The script does mkdir + atomic write +
+    // rename in one fork, then echoes the absolute remote path back so the
+    // caller doesn't need to know what $HOME resolved to.
+    //
+    // subdir and filename are expected to contain only [A-Za-z0-9._/-] so
+    // they're safe to embed unquoted in the remote bash; if that ever
+    // changes, add posix-single-quoting here.
     private static func uploadDataOneShot(
         payload: Data,
         host: String,
-        remoteDir: String,
-        remotePath: String
-    ) throws {
-        let quotedDir = posixSingleQuote(remoteDir)
-        let quotedTmp = posixSingleQuote(remotePath + ".part")
-        let quotedFinal = posixSingleQuote(remotePath)
-        let script = "set -e; mkdir -p \(quotedDir); cat > \(quotedTmp); mv \(quotedTmp) \(quotedFinal)"
+        subdir: String,
+        filename: String
+    ) throws -> String {
+        let script = """
+        set -e
+        D="$HOME/\(subdir)"
+        mkdir -p "$D"
+        P="$D/\(filename)"
+        cat > "$P.part"
+        mv "$P.part" "$P"
+        printf %s "$P"
+        """
 
         var arguments = sshOptions
         arguments.append(host)
         arguments.append(script)
 
-        _ = try runProcess(
+        let stdout = try runProcess(
             "/usr/bin/ssh",
             arguments,
             failurePrefix: "remote paste upload failed",
+            captureStdout: true,
             stdinData: payload
         )
-    }
-
-    private static func posixSingleQuote(_ value: String) -> String {
-        return "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        let path = stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else {
+            throw BridgeError.processFailed("remote paste upload returned empty path")
+        }
+        return path
     }
 
     // macOS ImageIO does not ship a WebP encoder (only a decoder), so we shell
     // out to the libwebp `cwebp` binary. Falls back to nil when cwebp is not
     // installed, which makes the caller keep the original PNG payload.
     private static func encodeWebP(_ source: Data, quality: Double) -> Data? {
+        tlog("encodeWebP start (\(source.count) bytes)")
+        defer { tlog("encodeWebP end") }
         guard let cwebpPath = locateCWebP() else { return nil }
 
         let tmpDir = FileManager.default.temporaryDirectory
@@ -223,12 +258,14 @@ enum RemotePasteBridge {
 
         do {
             try source.write(to: inputURL, options: .atomic)
+            tlog("encodeWebP: wrote input PNG")
             let qualityArg = String(Int((quality * 100).rounded()))
             _ = try runProcess(
                 cwebpPath,
                 ["-q", qualityArg, "-quiet", inputURL.path, "-o", outputURL.path],
                 failurePrefix: "cwebp encode failed"
             )
+            tlog("encodeWebP: cwebp returned")
             return try Data(contentsOf: outputURL)
         } catch {
             return nil
@@ -246,28 +283,6 @@ enum RemotePasteBridge {
             return path
         }
         return nil
-    }
-
-    private static func resolvedRemoteHome(host: String) throws -> String {
-        if let cached = stateQueue.sync(execute: { cachedRemoteHomes[host] }) {
-            return cached
-        }
-
-        var arguments = sshOptions
-        arguments.append(host)
-        arguments.append(contentsOf: ["printenv", "HOME"])
-        let output = try runProcess(
-            "/usr/bin/ssh",
-            arguments,
-            failurePrefix: "remote home lookup failed",
-            captureStdout: true
-        )
-        let value = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty else { throw BridgeError.remoteHomeUnavailable }
-        stateQueue.sync {
-            cachedRemoteHomes[host] = value
-        }
-        return value
     }
 
     private static func resolvedRemoteHost(configuredHost: String?) -> String {
@@ -319,19 +334,23 @@ enum RemotePasteBridge {
             finished.signal()
         }
 
+        tlog("runProcess: about to .run() \((executable as NSString).lastPathComponent)")
         try process.run()
+        tlog("runProcess: .run() returned (pid=\(process.processIdentifier))")
 
         if let data = stdinData, let pipe = stdinPipe {
             DispatchQueue.global(qos: .userInitiated).async {
                 let handle = pipe.fileHandleForWriting
                 handle.write(data)
                 try? handle.close()
+                Self.tlog("runProcess: stdin write done (\(data.count) bytes)")
             }
         }
 
         let waitResult = finished.wait(
             timeout: .now() + .milliseconds(Int(commandTimeoutSeconds * 1000))
         )
+        tlog("runProcess: process exited (status=\(process.terminationStatus))")
         if waitResult == .timedOut {
             process.terminate()
             _ = finished.wait(timeout: .now() + .seconds(2))
