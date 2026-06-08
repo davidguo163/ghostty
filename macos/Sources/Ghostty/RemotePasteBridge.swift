@@ -230,7 +230,8 @@ enum RemotePasteBridge {
             arguments,
             failurePrefix: "remote paste upload failed",
             captureStdout: true,
-            stdinData: payload
+            stdinData: payload,
+            timeout: nil
         )
         let path = stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !path.isEmpty else {
@@ -302,12 +303,19 @@ enum RemotePasteBridge {
         return defaultRemoteHost
     }
 
+    /// `timeout` is a wall-clock cap in seconds. Pass `nil` to wait without a
+    /// limit: required for the upload step, whose elapsed time scales with the
+    /// payload size (a 60MB+ file streamed over the one SSH session easily
+    /// exceeds any fixed budget). A stalled connection is still caught quickly
+    /// by the ssh-level ConnectTimeout / ServerAliveInterval options, so an
+    /// unbounded wait only blocks while the transfer is making progress.
     private static func runProcess(
         _ executable: String,
         _ arguments: [String],
         failurePrefix: String,
         captureStdout: Bool = false,
-        stdinData: Data? = nil
+        stdinData: Data? = nil,
+        timeout: Double? = commandTimeoutSeconds
     ) throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
@@ -347,14 +355,19 @@ enum RemotePasteBridge {
             }
         }
 
-        let waitResult = finished.wait(
-            timeout: .now() + .milliseconds(Int(commandTimeoutSeconds * 1000))
-        )
-        tlog("runProcess: process exited (status=\(process.terminationStatus))")
-        if waitResult == .timedOut {
-            process.terminate()
-            _ = finished.wait(timeout: .now() + .seconds(2))
-            throw BridgeError.processFailed("\(failurePrefix): timed out")
+        if let timeout {
+            let waitResult = finished.wait(
+                timeout: .now() + .milliseconds(Int(timeout * 1000))
+            )
+            tlog("runProcess: process exited (status=\(process.terminationStatus))")
+            if waitResult == .timedOut {
+                process.terminate()
+                _ = finished.wait(timeout: .now() + .seconds(2))
+                throw BridgeError.processFailed("\(failurePrefix): timed out")
+            }
+        } else {
+            finished.wait()
+            tlog("runProcess: process exited (status=\(process.terminationStatus))")
         }
 
         let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
