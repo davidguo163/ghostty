@@ -52,6 +52,15 @@ enum RemotePasteBridge {
         NSLog("[paste-timing] %.6f %@", Date().timeIntervalSince1970, label)
     }
 
+    // Ignore SIGPIPE process-wide. When we stream a large paste payload into a
+    // child process's stdin and the child closes/exits early, the write(2) would
+    // otherwise raise SIGPIPE and kill the whole app. Ignoring it lets the write
+    // fail with EPIPE so the throwing FileHandle API can surface a Swift error.
+    // Evaluated exactly once (static let is lazy + thread-safe).
+    private static let suppressSIGPIPE: Void = {
+        signal(SIGPIPE, SIG_IGN)
+    }()
+
     static func preparePaste(for pasteboard: NSPasteboard) throws -> PasteRequest {
         tlog("preparePaste start")
         defer { tlog("preparePaste end") }
@@ -317,6 +326,8 @@ enum RemotePasteBridge {
         stdinData: Data? = nil,
         timeout: Double? = commandTimeoutSeconds
     ) throws -> String {
+        _ = Self.suppressSIGPIPE
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
@@ -349,9 +360,17 @@ enum RemotePasteBridge {
         if let data = stdinData, let pipe = stdinPipe {
             DispatchQueue.global(qos: .userInitiated).async {
                 let handle = pipe.fileHandleForWriting
-                handle.write(data)
+                do {
+                    // Throwing API: a broken pipe (child exited / closed stdin early,
+                    // common with large payloads like a pasted video) surfaces as a
+                    // Swift error instead of an uncatchable ObjC NSException that
+                    // would abort the whole process.
+                    try handle.write(contentsOf: data)
+                    Self.tlog("runProcess: stdin write done (\(data.count) bytes)")
+                } catch {
+                    Self.tlog("runProcess: stdin write failed: \(error)")
+                }
                 try? handle.close()
-                Self.tlog("runProcess: stdin write done (\(data.count) bytes)")
             }
         }
 
