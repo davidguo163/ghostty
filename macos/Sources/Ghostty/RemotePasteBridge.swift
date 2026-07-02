@@ -33,13 +33,24 @@ enum RemotePasteBridge {
     private static let remoteTmuxRootSuffix = ".tmux"
     private static let commandTimeoutSeconds = 15.0
     private static let webpQuality: Double = 0.85
+    // ControlMaster=no: reuse an existing ssh_config ControlMaster socket when
+    // one is live (fast path), but never CREATE one. A paste-owned
+    // ControlPersist master outlives the paste carrying these options, gets
+    // shared with later interactive sessions, and its death right after
+    // detaching is exactly the "Failed to connect to new control master"
+    // fatal (RCA 2026-07-01).
+    //
+    // ServerAlive 15s x 4 = 60s receive-gap tolerance. The old 5s x 1 (~10s)
+    // let a short network stall kill the connection mid-upload or even
+    // mid-handshake; 60s still bounds a truly dead connection.
     private static let sshOptions = [
         "-o", "BatchMode=yes",
         "-o", "ConnectTimeout=5",
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "ServerAliveInterval=5",
-        "-o", "ServerAliveCountMax=1",
+        "-o", "ControlMaster=no",
+        "-o", "ServerAliveInterval=15",
+        "-o", "ServerAliveCountMax=4",
     ]
     // Timing instrumentation, gated on env var so it's free in production.
     // Set GHOSTTY_PASTE_TIMING=1 in launchctl/Info.plist or via `open -a` env
